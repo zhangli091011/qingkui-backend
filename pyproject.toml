@@ -1,0 +1,39 @@
+[project]
+name = "qingkui-backend"
+version = "0.1.0"
+description = "Qingkui Android MVP backend"
+requires-python = ">=3.11"
+dependencies = [
+    "alembic>=1.16,<2",
+    "email-validator>=2.2,<3",
+    "fastapi>=0.116,<1",
+    "httpx>=0.28,<1",
+    "psycopg[binary]>=3.2,<4",
+    "pwdlib[argon2]>=0.2,<1",
+    "pydantic-settings>=2.10,<3",
+    "pyjwt>=2.10,<3",
+    "python-multipart>=0.0.20,<1",
+    "sqlalchemy>=2.0,<3",
+    "uvicorn[standard]>=0.35,<1",
+]
+
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+exclude = ["alembic*", "tests*"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.4,<9",
+    "pytest-cov>=6.2,<7",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.coverage.run]
+source = ["app"]

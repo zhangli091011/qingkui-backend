@@ -1,0 +1,53 @@
+# Android 联调契约
+
+后端基地址：
+
+- Android 模拟器：`http://10.0.2.2:8000/api/`
+- C9 真机：`http://<开发机局域网IP>:8000/api/`
+- 测试/生产：必须使用 HTTPS 域名
+
+## 首次进入
+
+1. `POST auth/register` 或 `POST auth/login`。
+2. 将 `access_token` 放入 `Authorization: Bearer ...`。
+3. 收到 401 时只调用一次 `POST auth/refresh`；刷新凭证会轮换，旧值立即失效。
+4. `GET credits` 显示账户页额度。
+
+## 现有 Kotlin 模型映射
+
+| API 值 | Android 当前枚举 |
+|---|---|
+| `student` / `assistant` | `MessageAuthor.Student` / `Assistant` |
+| `unexplored` | `KnowledgeStatus.Unexplored` |
+| `explored` | `KnowledgeStatus.Explored` |
+| `understood` | `KnowledgeStatus.Understood` |
+| `verified` | `KnowledgeStatus.Verified` |
+| `unstable` | `KnowledgeStatus.Unstable` |
+| `error_prone` | `KnowledgeStatus.ErrorProne` |
+| `to_explore` | Android 尚缺该枚举；联调期可映射为 `Unexplored` |
+
+后端节点字段 `id/name/chapter/status` 对应现有 `KnowledgeNode.id/title/subtitle/status`。坐标由客户端布局算法生成，不由 API 固定返回。
+
+## 问答闭环
+
+1. `POST qa/sessions`，传 `mode` 和可选 `knowledge_node_id`。
+2. `POST qa/sessions/{id}/messages`，传 `content`、`help_level`。
+3. 显示 `assistant_message.content`；来源面板读取 `citations`。
+4. 用响应里的 `balance` 原子更新额度，不在客户端自行减一。
+
+`mode`：`knowledge`、`problem`、`error`、`review`、`explore`、`verify`。
+
+`help_level`：`keyword`、`next_step`、`approach`、`full`、`conclusion`。
+
+完整解析消耗 2 额度，其余当前消耗 1 额度。HTTP 502 表示模型失败且未扣费；402 表示额度不足；503 表示服务端未配置模型。
+
+## 图谱与学习状态
+
+- 搜索：`GET knowledge/search?q=二次函数`
+- 节点详情：`GET knowledge/nodes/{id}`
+- 当前节点邻接：`GET knowledge/nodes/{id}/neighbors`
+- 浏览后记录：`POST learning/events`，`event_type=viewed_node`
+- 主动状态：`PATCH learning/nodes/{id}/state`
+- 学习页：`GET learning/summary`
+
+客户端不能直接把状态改成 `verified`。只有 `completed_check` 且 `event_data.passed=true` 的学习事件可以产生“已验证”。
