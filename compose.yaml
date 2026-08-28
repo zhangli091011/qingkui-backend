@@ -2,10 +2,10 @@ services:
   api:
     build: .
     ports:
-      - "8000:8000"
+      - "${QINGKUI_BIND_ADDRESS:-0.0.0.0}:${QINGKUI_PORT:-8000}:8000"
     environment:
       APP_ENV: production
-      DATABASE_URL: postgresql+psycopg://qingkui:qingkui@postgres:5432/qingkui
+      DATABASE_URL: postgresql+psycopg://qingkui:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/qingkui
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?Set DEEPSEEK_API_KEY}
       DEEPSEEK_MODEL: deepseek-v4-flash
@@ -19,7 +19,7 @@ services:
     environment:
       POSTGRES_DB: qingkui
       POSTGRES_USER: qingkui
-      POSTGRES_PASSWORD: qingkui
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -38,8 +38,8 @@ services:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: qingkui
-      MINIO_ROOT_PASSWORD: change-this-before-deploy
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-qingkui}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}
     volumes:
       - minio_data:/data
 

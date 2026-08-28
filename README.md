@@ -45,6 +45,8 @@ DATABASE_URL=postgresql+psycopg://user:password@host:5432/qingkui
 
 `compose.yaml` 同时准备 PostgreSQL、Redis 和 MinIO。Redis/MinIO 当前不在同步问答路径中，后续用于 OCR 任务队列和对象上传。
 
+生产部署前必须在服务器 `.env` 中设置随机的 `JWT_SECRET`、`POSTGRES_PASSWORD`、`MINIO_ROOT_PASSWORD` 和服务端 `DEEPSEEK_API_KEY`。`.dockerignore` 会阻止这些环境文件进入容器镜像。
+
 创建首个管理员：
 
 ```powershell
