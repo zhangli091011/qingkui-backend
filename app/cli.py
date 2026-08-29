@@ -214,7 +214,8 @@ def materialize_launch_candidates_file(limit: int) -> None:
         )
     print(
         f"Launch candidates: documents={summary.documents}, nodes_created={summary.nodes_created}, "
-        f"edges_created={summary.edges_created}, skipped_existing={summary.skipped_existing}"
+        f"edges_created={summary.edges_created}, skipped_existing={summary.skipped_existing}, "
+        f"nodes_removed={summary.nodes_removed}"
     )
 
 

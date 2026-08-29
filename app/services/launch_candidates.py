@@ -28,6 +28,7 @@ class CandidateSummary:
     nodes_created: int
     edges_created: int
     skipped_existing: int
+    nodes_removed: int = 0
 
 
 def _clean_title(title: str) -> str:
@@ -152,6 +153,42 @@ def _add_node(
     return node
 
 
+def _remove_stale_scope_candidates(
+    db: Session,
+    *,
+    subject: str,
+    grade: str,
+    textbook_version: str,
+) -> int:
+    documents = list(db.scalars(select(KnowledgeDocument).where(KnowledgeDocument.subject == subject)))
+    source_scope = {
+        _source_id(document.id): (
+            document.grade == grade and document.textbook_version == textbook_version
+        )
+        for document in documents
+    }
+    stale_source_ids = [source_id for source_id, in_scope in source_scope.items() if not in_scope]
+    if not stale_source_ids:
+        return 0
+    stale_nodes = list(
+        db.scalars(
+            select(KnowledgeNode).where(
+                KnowledgeNode.id.like("candidate_%"),
+                KnowledgeNode.subject == subject,
+                KnowledgeNode.grade == grade,
+                KnowledgeNode.textbook_version == textbook_version,
+                KnowledgeNode.source_id.in_(stale_source_ids),
+                KnowledgeNode.review_status == "draft",
+                KnowledgeNode.is_active.is_(False),
+            )
+        )
+    )
+    for node in stale_nodes:
+        db.delete(node)
+    db.flush()
+    return len(stale_nodes)
+
+
 def materialize_launch_candidates(
     db: Session,
     *,
@@ -160,6 +197,12 @@ def materialize_launch_candidates(
     textbook_version: str,
     limit: int = 600,
 ) -> CandidateSummary:
+    nodes_removed = _remove_stale_scope_candidates(
+        db,
+        subject=subject,
+        grade=grade,
+        textbook_version=textbook_version,
+    )
     documents = list(
         db.scalars(
             select(KnowledgeDocument)
@@ -236,4 +279,4 @@ def materialize_launch_candidates(
                 )
                 edges_created += 1
     db.commit()
-    return CandidateSummary(len(preferred), nodes_created, edges_created, skipped_existing)
+    return CandidateSummary(len(preferred), nodes_created, edges_created, skipped_existing, nodes_removed)

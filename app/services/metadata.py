@@ -190,6 +190,25 @@ def document_family_key(document: KnowledgeDocument) -> str:
     return value[:180] or document.id
 
 
+def resolve_document_grade(
+    current_grade: str | None,
+    *,
+    title: str,
+    haystack: str,
+    metadata_source: str | None,
+) -> str | None:
+    """Resolve grade while allowing strong curriculum evidence to repair stale metadata."""
+    title_grade = infer_grade(title)
+    inferred_grade = infer_grade(haystack)
+    if title_grade:
+        return title_grade
+    if current_grade == "高一" and inferred_grade == "高二":
+        return "高二"
+    if metadata_source == "rule_backfill" and inferred_grade:
+        return inferred_grade
+    return current_grade or inferred_grade
+
+
 def backfill_document_metadata(db: Session, *, limit: int | None = None) -> dict[str, int]:
     statement = select(KnowledgeDocument).order_by(KnowledgeDocument.created_at)
     if limit:
@@ -202,11 +221,12 @@ def backfill_document_metadata(db: Session, *, limit: int | None = None) -> dict
         subject = normalize_subject(document.subject) or normalize_subject(metadata.get("subject")) or infer_subject(haystack)
         grade_aliases = {"高中一": "高一", "高中二": "高二", "高中三": "高三", "初中一": "初一", "初中二": "初二", "初中三": "初三"}
         current_grade = grade_aliases.get(document.grade or "", document.grade) or grade_aliases.get(str(metadata.get("grade") or ""), metadata.get("grade"))
-        title_grade = infer_grade(document.title)
-        if metadata.get("metadata_source") == "rule_backfill" and title_grade:
-            grade = title_grade
-        else:
-            grade = current_grade or title_grade or infer_grade(haystack)
+        grade = resolve_document_grade(
+            current_grade,
+            title=document.title,
+            haystack=haystack,
+            metadata_source=metadata.get("metadata_source"),
+        )
         textbook_aliases = {"人教a版": "人教A版", "人教b版": "人教B版"}
         textbook = textbook_aliases.get(document.textbook_version or "", document.textbook_version) or textbook_aliases.get(str(metadata.get("textbook_version") or ""), metadata.get("textbook_version")) or infer_textbook_version(haystack)
         current_chapter = document.chapter or metadata.get("chapter")

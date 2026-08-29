@@ -2,12 +2,13 @@ import uuid
 
 from sqlalchemy import select
 
-from app.db import SessionLocal
+from app.db import Base, SessionLocal, engine
 from app.models import KnowledgeChunk, KnowledgeDocument, KnowledgeNode
 from app.services.launch_candidates import materialize_launch_candidates
 
 
 def test_materialize_launch_candidates_stays_in_draft() -> None:
+    Base.metadata.create_all(bind=engine)
     document_id = str(uuid.uuid4())
     with SessionLocal() as db:
         document = KnowledgeDocument(
@@ -60,3 +61,22 @@ def test_materialize_launch_candidates_stays_in_draft() -> None:
         assert matching
         assert all(node.review_status == "draft" and not node.is_active for node in matching)
         assert all("待审核" in node.explanation for node in matching)
+
+        document.grade = "高二"
+        db.commit()
+        reconciled = materialize_launch_candidates(
+            db,
+            subject="数学",
+            grade="高一",
+            textbook_version="人教A版",
+            limit=10,
+        )
+        assert reconciled.nodes_removed >= len(matching)
+        assert not list(
+            db.scalars(
+                select(KnowledgeNode).where(
+                    KnowledgeNode.chapter == "1.1 集合的概念",
+                    KnowledgeNode.id.like("candidate_%"),
+                )
+            )
+        )
