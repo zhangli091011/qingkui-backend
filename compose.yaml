@@ -1,4 +1,21 @@
 services:
+  vector-sync:
+    build: .
+    command: ["python", "-m", "app.cli", "sync-vector-index-from-oss", "--allow-stale"]
+    environment:
+      APP_ENV: production
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
+      OSS_BUCKET: ${OSS_BUCKET:-qingkui-yuhua}
+      OSS_ENDPOINT: ${OSS_ENDPOINT:-https://oss-cn-qingdao.aliyuncs.com}
+      OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:-}
+      OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET:-}
+      OSS_VECTOR_OBJECT_KEY: ${OSS_VECTOR_OBJECT_KEY:-knowledge/index/qingkui-vectors.npz}
+      OSS_VECTOR_POINTER_KEY: ${OSS_VECTOR_POINTER_KEY:-knowledge/index/current.json}
+      RETRIEVAL_VECTOR_INDEX_PATH: /data/qingkui-vectors.npz
+    volumes:
+      - ${QINGKUI_VECTOR_DATA_HOST_PATH:-./data}:/data
+    restart: "no"
+
   api:
     build: .
     ports:
@@ -23,8 +40,10 @@ services:
       CONTENT_LAUNCH_GRADE: ${CONTENT_LAUNCH_GRADE:-高一}
       CONTENT_LAUNCH_TEXTBOOK_VERSION: ${CONTENT_LAUNCH_TEXTBOOK_VERSION:-人教A版}
     volumes:
-      - ${QINGKUI_VECTOR_INDEX_HOST_PATH:-./data/qingkui-vectors.npz}:/data/qingkui-vectors.npz:ro
+      - ${QINGKUI_VECTOR_DATA_HOST_PATH:-./data}:/data:ro
     depends_on:
+      vector-sync:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     restart: unless-stopped

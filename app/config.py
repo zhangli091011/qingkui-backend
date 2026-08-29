@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     oss_access_key_secret: str | None = None
     oss_source_prefix: str = "knowledge/source"
     oss_vector_object_key: str = "knowledge/index/qingkui-vectors.npz"
+    oss_vector_pointer_key: str = "knowledge/index/current.json"
 
     @field_validator("cors_origins", mode="before")
     @classmethod

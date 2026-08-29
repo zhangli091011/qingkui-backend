@@ -19,7 +19,7 @@ from app.services.documents import (
 from app.services.wikibooks import import_wikibooks
 from app.services.knowledge import build_vector_index
 from app.services.metadata import backfill_document_metadata, extract_graph_relations
-from app.services.object_storage import migrate_knowledge_to_oss
+from app.services.object_storage import migrate_knowledge_to_oss, sync_vector_index_from_oss, verify_knowledge_oss
 from app.services.content_governance import governance_report
 from app.services.launch_candidates import materialize_launch_candidates
 
@@ -268,6 +268,11 @@ def main() -> None:
     oss_command.add_argument("--workers", type=int, default=4, choices=range(1, 17))
     oss_command.add_argument("--dry-run", action="store_true")
     oss_command.add_argument("--keep-source-uri", action="store_true", help="do not replace local source_uri after upload")
+    sync_command = subparsers.add_parser("sync-vector-index-from-oss", help="install a verified OSS vector index locally")
+    sync_command.add_argument("--version", choices=("current", "previous"), default="current")
+    sync_command.add_argument("--allow-stale", action="store_true", help="retain an existing local index if OSS is unavailable")
+    verify_command = subparsers.add_parser("verify-oss-storage", help="verify OSS document objects and vector pointer")
+    verify_command.add_argument("--workers", type=int, default=8, choices=range(1, 17))
     sqlite_import_command = subparsers.add_parser(
         "import-sqlite-knowledge",
         help="upsert static knowledge content from a SQLite snapshot into PostgreSQL",
@@ -314,6 +319,10 @@ def main() -> None:
         build_vector_index_file()
     elif args.command == "migrate-to-oss":
         migrate_knowledge_to_oss(workers=args.workers, dry_run=args.dry_run, update_source_uri=not args.keep_source_uri)
+    elif args.command == "sync-vector-index-from-oss":
+        sync_vector_index_from_oss(version=args.version, allow_stale=args.allow_stale)
+    elif args.command == "verify-oss-storage":
+        verify_knowledge_oss(workers=args.workers)
     elif args.command == "import-sqlite-knowledge":
         from app.services.sqlite_import import import_sqlite_knowledge
 
