@@ -75,10 +75,14 @@ def downgrade() -> None:
         columns = {column["name"] for column in inspector.get_columns("feedback_submissions")}
         if "reviewed_by" in columns:
             op.drop_index("ix_feedback_submissions_reviewed_by", table_name="feedback_submissions")
-            op.drop_column("feedback_submissions", "reviewed_by")
-        for name in ("reviewed_at", "review_note"):
-            if name in columns:
-                op.drop_column("feedback_submissions", name)
+        removable = [name for name in ("reviewed_at", "reviewed_by", "review_note") if name in columns]
+        if removable:
+            # SQLite cannot drop a column while an inline foreign key still
+            # references it. Batch mode recreates the table from the remaining
+            # columns and constraints, which also works on PostgreSQL.
+            with op.batch_alter_table("feedback_submissions") as batch_op:
+                for name in removable:
+                    batch_op.drop_column(name)
     if "knowledge_node_versions" in inspector.get_table_names():
         op.drop_index("ix_knowledge_node_versions_created_by", table_name="knowledge_node_versions")
         op.drop_index("ix_knowledge_node_versions_status", table_name="knowledge_node_versions")
