@@ -4,6 +4,7 @@ services:
     command: ["python", "-m", "app.cli", "sync-vector-index-from-oss", "--allow-stale"]
     environment:
       APP_ENV: production
+      DATABASE_URL: postgresql+psycopg://qingkui:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/qingkui
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
       OSS_BUCKET: ${OSS_BUCKET:-qingkui-yuhua}
       OSS_ENDPOINT: ${OSS_ENDPOINT:-https://oss-cn-qingdao.aliyuncs.com}
