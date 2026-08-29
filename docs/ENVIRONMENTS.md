@@ -16,3 +16,5 @@
 3. Android Release 构建必须使用 HTTPS；明文 HTTP 只允许 Debug manifest。
 4. 配置变化必须先在 test 通过 CI，再进入 pilot；production 只接受已验证的同一 Git commit。
 5. 每次部署记录 Git SHA、数据库 revision、APK versionCode、向量索引 SHA-256 和回滚目标。
+
+试点与生产默认启用内容发布范围门：首发只允许 `数学 / 高一 / 人教A版`。改变范围必须先生成内容治理报告，并完成来源授权、公式复核和关系完整性审核。

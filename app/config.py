@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     retrieval_query_cache_size: int = 256
     reindex_max_workers: int = 4
 
+    content_launch_subject: str = "数学"
+    content_launch_grade: str = "高一"
+    content_launch_textbook_version: str = "人教A版"
+    content_enforce_launch_scope: bool = False
+
     # Optional Alibaba Cloud OSS migration/sync settings. Credentials are
     # intentionally read only from the process environment.
     oss_bucket: str | None = None

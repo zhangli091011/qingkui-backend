@@ -19,11 +19,13 @@ from app.schemas import (
     KnowledgeNodeRestore,
     KnowledgeNodeUpdate,
     KnowledgeNodeVersionResponse,
+    ContentGovernanceReport,
     AuditLogResponse,
     ModelCostResponse,
     KnowledgeSourceCreate,
     SourceResponse,
 )
+from app.services.content_governance import node_publication_blockers, governance_report
 
 
 router = APIRouter(prefix="/admin", tags=["管理后台"])
@@ -89,6 +91,17 @@ def list_chapters(db: DbSession, _admin: AdminUser, subject: str | None = None) 
     return list(db.scalars(statement))
 
 
+@router.get("/knowledge/governance", response_model=ContentGovernanceReport)
+def get_content_governance_report(
+    db: DbSession,
+    _admin: AdminUser,
+    subject: str | None = None,
+    grade: str | None = None,
+    textbook_version: str | None = None,
+) -> dict:
+    return governance_report(db, subject=subject, grade=grade, textbook_version=textbook_version)
+
+
 @router.post("/knowledge/sources", response_model=SourceResponse, status_code=201)
 def create_source(payload: KnowledgeSourceCreate, db: DbSession, admin: AdminUser) -> KnowledgeSource:
     source = KnowledgeSource(**payload.model_dump())
@@ -114,7 +127,7 @@ def create_node(payload: KnowledgeNodeCreate, db: DbSession, admin: AdminUser) -
     source = db.get(KnowledgeSource, payload.source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="内容来源不存在")
-    if payload.review_status == "approved" and source.authorization_status not in ("authorized", "self_owned", "self_owned_demo"):
+    if payload.review_status == "approved" and source.authorization_status not in ("authorized", "self_owned", "public_domain"):
         raise HTTPException(status_code=409, detail="未确认授权的来源不能发布到正式库")
     node = KnowledgeNode(**payload.model_dump())
     db.add(node)
@@ -149,7 +162,7 @@ def update_node(
     if source is None:
         raise HTTPException(status_code=404, detail="内容来源不存在")
     review_status = changes.get("review_status", node.review_status)
-    if review_status == "approved" and source.authorization_status not in ("authorized", "self_owned", "self_owned_demo"):
+    if review_status == "approved" and source.authorization_status not in ("authorized", "self_owned", "public_domain"):
         raise HTTPException(status_code=409, detail="未确认授权的来源不能发布到正式库")
     for key, value in changes.items():
         setattr(node, key, value)
@@ -264,8 +277,9 @@ def publish_node(node_id: str, db: DbSession, admin: AdminUser, payload: Knowled
     if node is None:
         raise HTTPException(status_code=404, detail="知识点不存在")
     source = db.get(KnowledgeSource, node.source_id)
-    if source is None or source.authorization_status not in ("authorized", "self_owned", "self_owned_demo"):
-        raise HTTPException(status_code=409, detail="未确认授权的来源不能发布到正式库")
+    blockers = node_publication_blockers(db, node)
+    if blockers:
+        raise HTTPException(status_code=409, detail={"message": "知识点未通过发布门", "blockers": blockers})
     node.review_status = "approved"
     node.is_active = True
     node.version += 1
@@ -299,7 +313,7 @@ def restore_node(node_id: str, payload: KnowledgeNodeRestore, db: DbSession, adm
     source = db.get(KnowledgeSource, snapshot.get("source_id"))
     if source is None:
         raise HTTPException(status_code=404, detail="版本来源不存在")
-    if payload.publish and source.authorization_status not in ("authorized", "self_owned", "self_owned_demo"):
+    if payload.publish and source.authorization_status not in ("authorized", "self_owned", "public_domain"):
         raise HTTPException(status_code=409, detail="未确认授权的来源不能发布到正式库")
     for key in ("name", "subject", "grade", "textbook_version", "chapter", "definition", "explanation", "common_errors", "question_types", "source_id", "source_excerpt"):
         if key in snapshot:
@@ -308,6 +322,9 @@ def restore_node(node_id: str, payload: KnowledgeNodeRestore, db: DbSession, adm
     node.review_status = "draft"
     node.is_active = False
     if payload.publish:
+        blockers = node_publication_blockers(db, node)
+        if blockers:
+            raise HTTPException(status_code=409, detail={"message": "知识点未通过发布门", "blockers": blockers})
         node.review_status = "approved"
         node.is_active = True
     _add_version(db, node, admin.id, status="published" if payload.publish else "draft", change_note=payload.change_note or f"恢复版本 {payload.version}")

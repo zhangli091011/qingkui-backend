@@ -325,6 +325,24 @@ class KnowledgeNodeAction(BaseModel):
     change_note: str | None = Field(default=None, max_length=255)
 
 
+class ContentGovernanceCandidate(BaseModel):
+    id: str
+    name: str
+    chapter: str
+    review_status: str
+    publishable: bool
+    blockers: list[str]
+
+
+class ContentGovernanceReport(BaseModel):
+    scope: dict[str, str]
+    nodes: dict[str, int]
+    documents: dict[str, int]
+    relations: dict[str, int]
+    blocker_counts: dict[str, int]
+    candidates: list[ContentGovernanceCandidate]
+
+
 class AuditLogResponse(ApiModel):
     id: str
     actor_user_id: str | None

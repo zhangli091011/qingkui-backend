@@ -375,9 +375,9 @@ def extract_graph_relations(
             key = (source.id, target.id, edge_type.value)
             if key in existing:
                 continue
-                db.add(KnowledgeEdge(source_node_id=source.id, target_node_id=target.id, edge_type=edge_type, explanation=f"由文档《{document.title[:80]}》自动抽取，待审核"))
-                existing.add(key)
-                created += 1
+            db.add(KnowledgeEdge(source_node_id=source.id, target_node_id=target.id, edge_type=edge_type, explanation=f"由文档《{document.title[:80]}》自动抽取，待审核"))
+            existing.add(key)
+            created += 1
     if include_taxonomy:
         # Adjacent terms in the same curriculum list are only marked related;
         # this avoids asserting an unverified prerequisite direction.

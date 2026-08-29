@@ -44,6 +44,9 @@ python -m app.cli reindex-documents
 # 已有向量只生成本地检索索引，不调用百炼
 python -m app.cli build-vector-index
 
+# 发布前审计首发范围、授权、公式审核和图谱关系
+python -m app.cli content-governance-report --output content-governance-report.json
+
 # 终端交互式流式问答测试（不扣额度、不写入会话）
 python -m app.cli qa-console --mode knowledge --help-level approach
 ```
@@ -109,6 +112,7 @@ DEEPSEEK_MODEL=deepseek-v4-flash
 | 管理能力 | 接口 |
 |---|---|
 | 节点/章节 | `GET /api/admin/knowledge/nodes`、`/chapters` |
+| 内容治理报告 | `GET /api/admin/knowledge/governance` |
 | 关系 CRUD | `GET/POST/PATCH/DELETE /api/admin/knowledge/edges` |
 | 版本历史与状态 | `GET .../versions`、`POST .../publish`、`/withdraw`、`/restore` |
 | 反馈审核 | `GET/PATCH /api/admin/feedback` |
