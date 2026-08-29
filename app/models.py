@@ -99,6 +99,60 @@ class KnowledgeSource(Base):
     authorization_status: Mapped[str] = mapped_column(String(40), default="internal_demo")
 
 
+class KnowledgeDocument(Base):
+    __tablename__ = "knowledge_documents"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    title: Mapped[str] = mapped_column(String(255), index=True)
+    subject: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    grade: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    textbook_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    chapter: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    document_role: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    source_type: Mapped[str] = mapped_column(String(40), default="local_file")
+    source_uri: Mapped[str] = mapped_column(String(1000))
+    authorization_status: Mapped[str] = mapped_column(String(40), index=True)
+    checksum_sha256: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    mime_type: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    document_metadata: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    chunks: Mapped[list[KnowledgeChunk]] = relationship(
+        back_populates="document",
+        cascade="all, delete-orphan",
+        order_by="KnowledgeChunk.sequence",
+    )
+
+
+class KnowledgeChunk(Base):
+    __tablename__ = "knowledge_chunks"
+    __table_args__ = (UniqueConstraint("document_id", "sequence"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("knowledge_documents.id", ondelete="CASCADE"),
+        index=True,
+    )
+    sequence: Mapped[int] = mapped_column(Integer)
+    content: Mapped[str] = mapped_column(Text)
+    content_type: Mapped[str] = mapped_column(String(20), default="text", index=True)
+    formula_latex: Mapped[str | None] = mapped_column(Text, nullable=True)
+    formula_source: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    ocr_confidence: Mapped[float | None] = mapped_column(nullable=True)
+    formula_review_status: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
+    formula_review_note: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    char_start: Mapped[int] = mapped_column(Integer)
+    char_end: Mapped[int] = mapped_column(Integer)
+    embedding: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
+    embedding_model: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    document: Mapped[KnowledgeDocument] = relationship(back_populates="chunks")
+
+
 class KnowledgeNode(Base):
     __tablename__ = "knowledge_nodes"
 
@@ -120,6 +174,27 @@ class KnowledgeNode(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     source: Mapped[KnowledgeSource] = relationship()
+    versions: Mapped[list[KnowledgeNodeVersion]] = relationship(
+        back_populates="node", cascade="all, delete-orphan", order_by="KnowledgeNodeVersion.version"
+    )
+
+
+class KnowledgeNodeVersion(Base):
+    __tablename__ = "knowledge_node_versions"
+    __table_args__ = (UniqueConstraint("node_id", "version"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    node_id: Mapped[str] = mapped_column(ForeignKey("knowledge_nodes.id", ondelete="CASCADE"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    snapshot: Mapped[dict] = mapped_column(JSON)
+    change_note: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="draft", index=True)
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    node: Mapped[KnowledgeNode] = relationship(back_populates="versions")
 
 
 class KnowledgeEdge(Base):
@@ -153,6 +228,7 @@ class Conversation(Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     title: Mapped[str] = mapped_column(String(120), default="新对话")
     mode: Mapped[QaMode] = mapped_column(Enum(QaMode))
+    subject: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
     knowledge_node_id: Mapped[str | None] = mapped_column(ForeignKey("knowledge_nodes.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
@@ -227,6 +303,9 @@ class FeedbackSubmission(Base):
     category: Mapped[str] = mapped_column(String(40))
     content: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    review_note: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    reviewed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 

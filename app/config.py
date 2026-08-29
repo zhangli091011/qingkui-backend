@@ -27,6 +27,33 @@ class Settings(BaseSettings):
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-v4-flash"
     deepseek_timeout_seconds: float = 45.0
+    deepseek_max_tokens: int = 4096
+
+    retrieval_provider: Literal["bailian", "lexical"] = "lexical"
+    dashscope_api_key: str | None = None
+    dashscope_base_url: str = "https://dashscope.aliyuncs.com"
+    dashscope_api_mode: Literal["native", "openai_compatible"] = "native"
+    dashscope_embedding_model: str = "text-embedding-v4"
+    dashscope_embedding_dimension: int = 1024
+    dashscope_ocr_model: str = "qwen3.5-ocr"
+    dashscope_rerank_model: str = "gte-rerank-v2"
+    dashscope_rerank_enabled: bool = True
+    dashscope_timeout_seconds: float = 30.0
+    dashscope_query_timeout_seconds: float = 6.0
+    retrieval_candidate_limit: int = 30
+    retrieval_result_limit: int = 5
+    retrieval_vector_index_path: str = "./qingkui-vectors.npz"
+    retrieval_query_cache_size: int = 256
+    reindex_max_workers: int = 4
+
+    # Optional Alibaba Cloud OSS migration/sync settings. Credentials are
+    # intentionally read only from the process environment.
+    oss_bucket: str | None = None
+    oss_endpoint: str = "https://oss-cn-qingdao.aliyuncs.com"
+    oss_access_key_id: str | None = None
+    oss_access_key_secret: str | None = None
+    oss_source_prefix: str = "knowledge/source"
+    oss_vector_object_key: str = "knowledge/index/qingkui-vectors.npz"
 
     @field_validator("cors_origins", mode="before")
     @classmethod
@@ -44,6 +71,10 @@ class Settings(BaseSettings):
     @property
     def ai_ready(self) -> bool:
         return self.ai_provider == "stub" or bool(self.deepseek_api_key)
+
+    @property
+    def retrieval_ready(self) -> bool:
+        return self.retrieval_provider == "lexical" or bool(self.dashscope_api_key)
 
 
 @lru_cache

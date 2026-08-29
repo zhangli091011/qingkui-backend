@@ -12,6 +12,7 @@ os.environ["APP_ENV"] = "test"
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB.as_posix()}"
 os.environ["JWT_SECRET"] = "test-secret-that-is-long-enough-for-tests"
 os.environ["AI_PROVIDER"] = "stub"
+os.environ["RETRIEVAL_PROVIDER"] = "lexical"
 
 from app.main import app  # noqa: E402
 from app.db import engine  # noqa: E402
