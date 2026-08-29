@@ -47,6 +47,9 @@ python -m app.cli build-vector-index
 # 发布前审计首发范围、授权、公式审核和图谱关系
 python -m app.cli content-governance-report --output content-governance-report.json
 
+# 从首发范围授权文档生成最多 600 个未发布审核候选
+python -m app.cli materialize-launch-candidates --limit 600
+
 # 终端交互式流式问答测试（不扣额度、不写入会话）
 python -m app.cli qa-console --mode knowledge --help-level approach
 ```

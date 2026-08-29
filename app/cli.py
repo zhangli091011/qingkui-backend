@@ -21,6 +21,7 @@ from app.services.knowledge import build_vector_index
 from app.services.metadata import backfill_document_metadata, extract_graph_relations
 from app.services.object_storage import migrate_knowledge_to_oss
 from app.services.content_governance import governance_report
+from app.services.launch_candidates import materialize_launch_candidates
 
 
 def create_admin(username: str, email: str | None) -> None:
@@ -199,6 +200,24 @@ def content_governance_report_file(output: str | None = None) -> None:
     print(payload)
 
 
+def materialize_launch_candidates_file(limit: int) -> None:
+    from app.config import settings
+
+    Base.metadata.create_all(bind=engine)
+    with SessionLocal() as db:
+        summary = materialize_launch_candidates(
+            db,
+            subject=settings.content_launch_subject,
+            grade=settings.content_launch_grade,
+            textbook_version=settings.content_launch_textbook_version,
+            limit=limit,
+        )
+    print(
+        f"Launch candidates: documents={summary.documents}, nodes_created={summary.nodes_created}, "
+        f"edges_created={summary.edges_created}, skipped_existing={summary.skipped_existing}"
+    )
+
+
 def import_wikibooks_content(pages_per_topic: int) -> None:
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
@@ -261,6 +280,8 @@ def main() -> None:
     graph_command.add_argument("--limit", type=int)
     governance_command = subparsers.add_parser("content-governance-report", help="audit launch-scope content before publication")
     governance_command.add_argument("--output")
+    candidate_command = subparsers.add_parser("materialize-launch-candidates", help="create review-only nodes from launch-scope documents")
+    candidate_command.add_argument("--limit", type=int, default=600, choices=range(1, 601))
     wikibooks_command = subparsers.add_parser("import-wikibooks")
     wikibooks_command.add_argument("--pages-per-topic", type=int, default=6, choices=range(1, 11))
     qa_command = subparsers.add_parser("qa-console", help="interactive streaming AI QA tester")
@@ -303,6 +324,8 @@ def main() -> None:
         extract_graph_file(args.limit)
     elif args.command == "content-governance-report":
         content_governance_report_file(args.output)
+    elif args.command == "materialize-launch-candidates":
+        materialize_launch_candidates_file(args.limit)
     elif args.command == "import-wikibooks":
         import_wikibooks_content(args.pages_per_topic)
     elif args.command == "qa-console":

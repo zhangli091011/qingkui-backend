@@ -115,8 +115,11 @@ def infer_document_role(text: str, source_type: str | None = None) -> str:
 def infer_grade(text: str) -> str | None:
     value = text.lower()
     patterns = (
-        (r"高中数学必修第一册|必修第一册", "高一"),
-        (r"高中数学必修第二册|必修第二册", "高一"),
+        (r"选择性必修(?:第一|第二|第三)册", "高二"),
+        (r"空间向量|直线和圆的方程|圆锥曲线|椭圆|双曲线|抛物线|数列|等差数列|等比数列|导数", "高二"),
+        (r"计数原理|排列组合|随机变量|二项分布|超几何分布|正态分布|成对数据", "高二"),
+        (r"高中数学必修第一册|(?<!选择性)必修第一册", "高一"),
+        (r"高中数学必修第二册|(?<!选择性)必修第二册", "高一"),
         (r"高中一年级|高\s*[一1]", "高一"),
         (r"高中二年级|高\s*[二2]", "高二"),
         (r"高中三年级|高\s*[三3]", "高三"),
@@ -198,7 +201,12 @@ def backfill_document_metadata(db: Session, *, limit: int | None = None) -> dict
         haystack = _haystack(document)
         subject = normalize_subject(document.subject) or normalize_subject(metadata.get("subject")) or infer_subject(haystack)
         grade_aliases = {"高中一": "高一", "高中二": "高二", "高中三": "高三", "初中一": "初一", "初中二": "初二", "初中三": "初三"}
-        grade = grade_aliases.get(document.grade or "", document.grade) or grade_aliases.get(str(metadata.get("grade") or ""), metadata.get("grade")) or infer_grade(haystack)
+        current_grade = grade_aliases.get(document.grade or "", document.grade) or grade_aliases.get(str(metadata.get("grade") or ""), metadata.get("grade"))
+        title_grade = infer_grade(document.title)
+        if metadata.get("metadata_source") == "rule_backfill" and title_grade:
+            grade = title_grade
+        else:
+            grade = current_grade or title_grade or infer_grade(haystack)
         textbook_aliases = {"人教a版": "人教A版", "人教b版": "人教B版"}
         textbook = textbook_aliases.get(document.textbook_version or "", document.textbook_version) or textbook_aliases.get(str(metadata.get("textbook_version") or ""), metadata.get("textbook_version")) or infer_textbook_version(haystack)
         current_chapter = document.chapter or metadata.get("chapter")
