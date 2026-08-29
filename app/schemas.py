@@ -343,6 +343,55 @@ class ContentGovernanceReport(BaseModel):
     candidates: list[ContentGovernanceCandidate]
 
 
+class KnowledgeReviewQueueItem(BaseModel):
+    id: str
+    name: str
+    subject: str
+    grade: str
+    textbook_version: str
+    chapter: str
+    review_status: str
+    is_active: bool
+    source_title: str
+    source_excerpt: str
+    blockers: list[str]
+    updated_at: datetime
+
+
+class KnowledgeReviewQueueResponse(BaseModel):
+    total: int
+    offset: int
+    limit: int
+    items: list[KnowledgeReviewQueueItem]
+
+
+class FormulaReviewItem(BaseModel):
+    id: str
+    document_id: str
+    document_title: str
+    subject: str | None
+    chapter: str | None
+    sequence: int
+    formula_latex: str | None
+    formula_source: str | None
+    ocr_confidence: float | None
+    review_status: str | None
+    review_note: str | None
+
+
+class FormulaReviewQueueResponse(BaseModel):
+    total: int
+    offset: int
+    limit: int
+    items: list[FormulaReviewItem]
+
+
+class FormulaReviewUpdate(BaseModel):
+    review_status: str = Field(pattern=r"^(pending|approved|rejected)$")
+    formula_latex: str | None = Field(default=None, min_length=1, max_length=12000)
+    review_note: str | None = Field(default=None, max_length=1000)
+
+
 class AuditLogResponse(ApiModel):
     id: str
     actor_user_id: str | None

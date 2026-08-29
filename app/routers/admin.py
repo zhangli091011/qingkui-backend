@@ -1,12 +1,12 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 
 from app.deps import AdminUser, DbSession
-from app.models import AuditLog, CreditLedger, FeedbackSubmission, KnowledgeEdge, KnowledgeNode, KnowledgeNodeVersion, KnowledgeSource, Message
+from app.models import AuditLog, CreditLedger, FeedbackSubmission, KnowledgeChunk, KnowledgeDocument, KnowledgeEdge, KnowledgeNode, KnowledgeNodeVersion, KnowledgeSource, Message
 from app.schemas import (
     AdminFeedbackResponse,
     FeedbackReview,
@@ -20,6 +20,10 @@ from app.schemas import (
     KnowledgeNodeUpdate,
     KnowledgeNodeVersionResponse,
     ContentGovernanceReport,
+    FormulaReviewItem,
+    FormulaReviewQueueResponse,
+    FormulaReviewUpdate,
+    KnowledgeReviewQueueResponse,
     AuditLogResponse,
     ModelCostResponse,
     KnowledgeSourceCreate,
@@ -83,6 +87,18 @@ def list_nodes(
     return list(db.scalars(statement))
 
 
+@router.get("/knowledge/nodes/{node_id}", response_model=KnowledgeNodeDetail)
+def get_node(node_id: str, db: DbSession, _admin: AdminUser) -> KnowledgeNode:
+    node = db.scalar(
+        select(KnowledgeNode)
+        .options(joinedload(KnowledgeNode.source))
+        .where(KnowledgeNode.id == node_id)
+    )
+    if node is None:
+        raise HTTPException(status_code=404, detail="知识点不存在")
+    return node
+
+
 @router.get("/knowledge/chapters", response_model=list[str])
 def list_chapters(db: DbSession, _admin: AdminUser, subject: str | None = None) -> list[str]:
     statement = select(KnowledgeNode.chapter).distinct().order_by(KnowledgeNode.chapter)
@@ -100,6 +116,165 @@ def get_content_governance_report(
     textbook_version: str | None = None,
 ) -> dict:
     return governance_report(db, subject=subject, grade=grade, textbook_version=textbook_version)
+
+
+@router.get("/knowledge/review-queue", response_model=KnowledgeReviewQueueResponse)
+def knowledge_review_queue(
+    db: DbSession,
+    _admin: AdminUser,
+    subject: str | None = None,
+    grade: str | None = None,
+    textbook_version: str | None = None,
+    chapter: str | None = None,
+    review_status: str = "draft",
+    q: str | None = None,
+    blocker: str | None = None,
+    candidate_only: bool = True,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=100),
+) -> dict:
+    statement = select(KnowledgeNode).options(joinedload(KnowledgeNode.source)).order_by(
+        KnowledgeNode.chapter, KnowledgeNode.name
+    )
+    if candidate_only:
+        statement = statement.where(KnowledgeNode.id.like("candidate_%"))
+    if subject:
+        statement = statement.where(KnowledgeNode.subject == subject)
+    if grade:
+        statement = statement.where(KnowledgeNode.grade == grade)
+    if textbook_version:
+        statement = statement.where(KnowledgeNode.textbook_version == textbook_version)
+    if chapter:
+        statement = statement.where(KnowledgeNode.chapter == chapter)
+    if review_status != "all":
+        statement = statement.where(KnowledgeNode.review_status == review_status)
+    if q:
+        pattern = f"%{q.strip()}%"
+        statement = statement.where(or_(KnowledgeNode.name.ilike(pattern), KnowledgeNode.chapter.ilike(pattern)))
+    rows = list(db.scalars(statement))
+    if blocker:
+        rows_with_blockers = [
+            (node, node_publication_blockers(db, node, enforce_scope=True)) for node in rows
+        ]
+        rows_with_blockers = [item for item in rows_with_blockers if blocker in item[1]]
+        total = len(rows_with_blockers)
+        page = rows_with_blockers[offset : offset + limit]
+    else:
+        total = len(rows)
+        page = [
+            (node, node_publication_blockers(db, node, enforce_scope=True))
+            for node in rows[offset : offset + limit]
+        ]
+    items = []
+    for node, blockers in page:
+        items.append(
+            {
+                "id": node.id,
+                "name": node.name,
+                "subject": node.subject,
+                "grade": node.grade,
+                "textbook_version": node.textbook_version,
+                "chapter": node.chapter,
+                "review_status": node.review_status,
+                "is_active": node.is_active,
+                "source_title": node.source.title,
+                "source_excerpt": node.source_excerpt,
+                "blockers": blockers,
+                "updated_at": node.updated_at,
+            }
+        )
+    return {"total": total, "offset": offset, "limit": limit, "items": items}
+
+
+def _formula_item(chunk: KnowledgeChunk) -> dict:
+    return {
+        "id": chunk.id,
+        "document_id": chunk.document_id,
+        "document_title": chunk.document.title,
+        "subject": chunk.document.subject,
+        "chapter": chunk.document.chapter,
+        "sequence": chunk.sequence,
+        "formula_latex": chunk.formula_latex,
+        "formula_source": chunk.formula_source,
+        "ocr_confidence": chunk.ocr_confidence,
+        "review_status": chunk.formula_review_status,
+        "review_note": chunk.formula_review_note,
+    }
+
+
+@router.get("/knowledge/formulas", response_model=FormulaReviewQueueResponse)
+def formula_review_queue(
+    db: DbSession,
+    _admin: AdminUser,
+    review_status: str = "pending",
+    subject: str | None = None,
+    document_id: str | None = None,
+    confidence_max: float | None = Query(default=None, ge=0, le=1),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=100),
+) -> dict:
+    filters = [KnowledgeChunk.content_type == "formula"]
+    if review_status != "all":
+        filters.append(KnowledgeChunk.formula_review_status == review_status)
+    if subject:
+        filters.append(KnowledgeDocument.subject == subject)
+    if document_id:
+        filters.append(KnowledgeChunk.document_id == document_id)
+    if confidence_max is not None:
+        filters.append(KnowledgeChunk.ocr_confidence <= confidence_max)
+    total = db.scalar(
+        select(func.count(KnowledgeChunk.id)).join(KnowledgeDocument).where(*filters)
+    ) or 0
+    chunks = list(
+        db.scalars(
+            select(KnowledgeChunk)
+            .join(KnowledgeDocument)
+            .options(joinedload(KnowledgeChunk.document))
+            .where(*filters)
+            .order_by(KnowledgeChunk.ocr_confidence.asc().nulls_last(), KnowledgeChunk.created_at)
+            .offset(offset)
+            .limit(limit)
+        )
+    )
+    return {"total": total, "offset": offset, "limit": limit, "items": [_formula_item(chunk) for chunk in chunks]}
+
+
+@router.patch("/knowledge/formulas/{chunk_id}", response_model=FormulaReviewItem)
+def review_formula(
+    chunk_id: str,
+    payload: FormulaReviewUpdate,
+    db: DbSession,
+    admin: AdminUser,
+) -> dict:
+    chunk = db.scalar(
+        select(KnowledgeChunk)
+        .options(joinedload(KnowledgeChunk.document))
+        .where(KnowledgeChunk.id == chunk_id)
+    )
+    if chunk is None or chunk.content_type != "formula":
+        raise HTTPException(status_code=404, detail="公式分块不存在")
+    previous_status = chunk.formula_review_status
+    if payload.formula_latex is not None:
+        chunk.formula_latex = payload.formula_latex
+    chunk.formula_review_status = payload.review_status
+    chunk.formula_review_note = payload.review_note
+    db.add(
+        AuditLog(
+            actor_user_id=admin.id,
+            action="knowledge_formula.reviewed",
+            target_type="knowledge_chunk",
+            target_id=chunk.id,
+            details={
+                "previous_status": previous_status,
+                "review_status": payload.review_status,
+                "formula_updated": payload.formula_latex is not None,
+                "review_note": payload.review_note,
+            },
+        )
+    )
+    db.commit()
+    db.refresh(chunk)
+    return _formula_item(chunk)
 
 
 @router.post("/knowledge/sources", response_model=SourceResponse, status_code=201)

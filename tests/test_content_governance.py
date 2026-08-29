@@ -1,5 +1,9 @@
 from app.db import SessionLocal
-from app.models import User, UserRole
+import uuid
+
+from sqlalchemy import select
+
+from app.models import AuditLog, KnowledgeChunk, KnowledgeDocument, User, UserRole
 
 
 def _admin_headers(client) -> dict[str, str]:
@@ -11,6 +15,11 @@ def _admin_headers(client) -> dict[str, str]:
             "nickname": "内容管理员",
         },
     )
+    if response.status_code == 409:
+        response = client.post(
+            "/api/auth/login",
+            json={"username": "content_admin_01", "password": "content-admin-pass-123"},
+        )
     assert response.status_code in (200, 201)
     payload = response.json()
     with SessionLocal() as db:
@@ -116,3 +125,96 @@ def test_publication_gate_and_governance_report(client) -> None:
     assert payload["nodes"]["total"] >= 3
     assert payload["nodes"]["publishable"] >= 2
     assert payload["relations"]["prerequisite"] >= 1
+
+    queue = client.get(
+        "/api/admin/knowledge/review-queue",
+        headers=headers,
+        params={"candidate_only": "false", "review_status": "draft", "q": "集合"},
+    )
+    assert queue.status_code == 200
+    queue_payload = queue.json()
+    assert queue_payload["total"] >= 1
+    assert all("blockers" in item and "source_title" in item for item in queue_payload["items"])
+
+    detail = client.get("/api/admin/knowledge/nodes/governance_right", headers=headers)
+    assert detail.status_code == 200
+    assert detail.json()["name"] == "集合的表示"
+
+
+def test_formula_review_queue_and_audit_log(client) -> None:
+    headers = _admin_headers(client)
+    document_id = str(uuid.uuid4())
+    chunk_id = str(uuid.uuid4())
+    with SessionLocal() as db:
+        db.add(
+            KnowledgeDocument(
+                id=document_id,
+                title="公式审核测试文档",
+                subject="数学",
+                grade="高一",
+                textbook_version="人教A版",
+                chapter="函数",
+                document_role="notes",
+                source_type="local_file",
+                source_uri=f"oss://test/{document_id}.md",
+                authorization_status="self_owned",
+                checksum_sha256=uuid.uuid4().hex + uuid.uuid4().hex,
+                status="indexed",
+                document_metadata={},
+            )
+        )
+        db.add(
+            KnowledgeChunk(
+                id=chunk_id,
+                document_id=document_id,
+                sequence=0,
+                content=r"f'(x)=1/x",
+                content_type="formula",
+                formula_latex=r"f'(x)=1/x",
+                formula_source="ocr",
+                ocr_confidence=0.61,
+                formula_review_status="pending",
+                char_start=0,
+                char_end=11,
+            )
+        )
+        db.commit()
+
+    queue = client.get(
+        "/api/admin/knowledge/formulas",
+        headers=headers,
+        params={"review_status": "pending", "subject": "数学", "confidence_max": 0.7},
+    )
+    assert queue.status_code == 200
+    assert any(item["id"] == chunk_id for item in queue.json()["items"])
+
+    reviewed = client.patch(
+        f"/api/admin/knowledge/formulas/{chunk_id}",
+        headers=headers,
+        json={
+            "review_status": "approved",
+            "formula_latex": r"f'(x)=\frac{1}{x}",
+            "review_note": "已对照原始页面",
+        },
+    )
+    assert reviewed.status_code == 200
+    assert reviewed.json()["review_status"] == "approved"
+    assert reviewed.json()["formula_latex"] == r"f'(x)=\frac{1}{x}"
+    with SessionLocal() as db:
+        audit = db.scalar(
+            select(AuditLog).where(
+                AuditLog.action == "knowledge_formula.reviewed",
+                AuditLog.target_id == chunk_id,
+            )
+        )
+        assert audit is not None
+        assert audit.details["formula_updated"] is True
+
+
+def test_admin_page_exposes_review_workspaces(client) -> None:
+    response = client.get("/admin")
+
+    assert response.status_code == 200
+    assert "知识候选审核队列" in response.text
+    assert "公式审核队列" in response.text
+    assert "innerHTML" not in response.text
