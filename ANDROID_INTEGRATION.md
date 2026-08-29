@@ -4,7 +4,7 @@
 
 - Android 模拟器：`http://10.0.2.2:8000/api/`
 - C9 真机：`http://<开发机局域网IP>:8000/api/`
-- 测试/生产：必须使用 HTTPS 域名
+- 测试/生产：`https://qingkui-api.82-158-229-157.sslip.io/api/`
 
 ## 首次进入
 

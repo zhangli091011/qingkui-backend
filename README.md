@@ -84,6 +84,7 @@ DEEPSEEK_MODEL=deepseek-v4-flash
 - 健康检查：`http://127.0.0.1:8000/health`
 - OpenAPI：`http://127.0.0.1:8000/docs`
 - Android 模拟器基地址：`http://10.0.2.2:8000/api/`
+- 生产 API：`https://qingkui-api.82-158-229-157.sslip.io/api/`
 - C9 真机使用开发机局域网 IP，并允许明文 HTTP 仅用于本地调试；测试与生产必须使用 HTTPS。
 
 开发环境会自动创建 SQLite 表并导入 6 个高一数学演示节点。演示知识源标记为 `self_owned_demo`，不能当作正式教材内容发布。

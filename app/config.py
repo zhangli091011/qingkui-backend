@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "青葵计划 API"
-    app_env: Literal["development", "test", "production"] = "development"
+    app_env: Literal["development", "test", "pilot", "production"] = "development"
     api_prefix: str = "/api"
     database_url: str = "sqlite:///./qingkui.db"
     jwt_secret: str = "development-only-secret-change-before-deploy"
@@ -64,7 +64,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_production_secrets(self) -> "Settings":
-        if self.app_env == "production" and self.jwt_secret.startswith("development-"):
+        if self.app_env in {"pilot", "production"} and self.jwt_secret.startswith("development-"):
             raise ValueError("JWT_SECRET must be changed in production")
         return self
 
