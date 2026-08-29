@@ -82,8 +82,14 @@ GRAPH_SUBJECT_CODES = {"语文": "chinese", "数学": "math", "英语": "english
 
 def _haystack(document: KnowledgeDocument) -> str:
     metadata = document.document_metadata or {}
-    values = [document.title, document.source_uri, str(metadata.get("filename", "")), str(metadata.get("relative_path", ""))]
-    return " ".join(value for value in values if value).lower()
+    values = [
+        document.title,
+        document.source_uri,
+        str(metadata.get("filename", "")),
+        str(metadata.get("relative_path", "")),
+        str(metadata.get("original_source_uri", "")),
+    ]
+    return unquote(" ".join(value for value in values if value)).lower()
 
 
 def infer_document_role(text: str, source_type: str | None = None) -> str:
@@ -109,20 +115,18 @@ def infer_document_role(text: str, source_type: str | None = None) -> str:
 def infer_grade(text: str) -> str | None:
     value = text.lower()
     patterns = (
-        (r"高\s*([一二三123])", "高中{}"),
-        (r"初\s*([一二三四五六七八九123456789])", "初中{}"),
-        (r"七年级|初一", "初中一"), (r"八年级|初二", "初中二"), (r"九年级|初三", "初中三"),
-        (r"高中一年级|高一", "高中一"), (r"高中二年级|高二", "高中二"), (r"高中三年级|高三", "高中三"),
+        (r"高中数学必修第一册|必修第一册", "高一"),
+        (r"高中数学必修第二册|必修第二册", "高一"),
+        (r"高中一年级|高\s*[一1]", "高一"),
+        (r"高中二年级|高\s*[二2]", "高二"),
+        (r"高中三年级|高\s*[三3]", "高三"),
+        (r"七年级|初\s*[一1]", "初一"),
+        (r"八年级|初\s*[二2]", "初二"),
+        (r"九年级|初\s*[三3]", "初三"),
     )
-    for pattern, template in patterns:
-        match = re.search(pattern, value)
-        if not match:
-            continue
-        if "{}" in template:
-            token = match.group(1)
-            token = {"1": "一", "2": "二", "3": "三"}.get(token, token)
-            return template.format(token)
-        return template
+    for pattern, result in patterns:
+        if re.search(pattern, value):
+            return result
     return None
 
 
@@ -135,7 +139,15 @@ def infer_textbook_version(text: str) -> str | None:
     for pattern in patterns:
         match = re.search(pattern, value, re.IGNORECASE)
         if match:
-            return match.group(1)
+            result = match.group(1)
+            lowered = result.lower()
+            if lowered == "人教a版":
+                return "人教A版"
+            if lowered == "人教b版":
+                return "人教B版"
+            if lowered == "人教版":
+                return "人教版"
+            return result
     return None
 
 
@@ -144,6 +156,12 @@ def infer_chapter(text: str, metadata: dict | None = None) -> str | None:
     topic = metadata.get("topic")
     if isinstance(topic, str) and topic.strip():
         return topic.strip()[:120]
+    title = str(metadata.get("filename") or text)
+    title = re.sub(r"\.(docx|pdf|txt|md|pptx)$", "", title, flags=re.IGNORECASE)
+    title = re.sub(r"^第\s*\d+\s*讲\s*", "", title)
+    section = re.match(r"(\d+(?:\.\d+){1,2})\s*([^（(]{1,60})", title)
+    if section:
+        return f"{section.group(1)} {section.group(2).strip()}"[:120]
     patterns = (
         r"第\s*[一二三四五六七八九十百0-9]+\s*章\s*[:：]?\s*([^()（）|｜\\/]{2,80})",
         r"chapter\s*[0-9ivx]+\s*[-:：]?\s*([A-Za-z][^\\/|]{2,80})",
@@ -179,9 +197,16 @@ def backfill_document_metadata(db: Session, *, limit: int | None = None) -> dict
         metadata = dict(document.document_metadata or {})
         haystack = _haystack(document)
         subject = normalize_subject(document.subject) or normalize_subject(metadata.get("subject")) or infer_subject(haystack)
-        grade = document.grade or metadata.get("grade") or infer_grade(haystack)
-        textbook = document.textbook_version or metadata.get("textbook_version") or infer_textbook_version(haystack)
-        chapter = document.chapter or metadata.get("chapter") or infer_chapter(haystack, metadata)
+        grade_aliases = {"高中一": "高一", "高中二": "高二", "高中三": "高三", "初中一": "初一", "初中二": "初二", "初中三": "初三"}
+        grade = grade_aliases.get(document.grade or "", document.grade) or grade_aliases.get(str(metadata.get("grade") or ""), metadata.get("grade")) or infer_grade(haystack)
+        textbook_aliases = {"人教a版": "人教A版", "人教b版": "人教B版"}
+        textbook = textbook_aliases.get(document.textbook_version or "", document.textbook_version) or textbook_aliases.get(str(metadata.get("textbook_version") or ""), metadata.get("textbook_version")) or infer_textbook_version(haystack)
+        current_chapter = document.chapter or metadata.get("chapter")
+        if metadata.get("metadata_source") == "rule_backfill" and current_chapter and (
+            len(str(current_chapter)) >= 110 or str(current_chapter).lower().count(".docx") > 1
+        ):
+            current_chapter = None
+        chapter = current_chapter or infer_chapter(document.title, metadata) or infer_chapter(haystack, metadata)
         role = document.document_role or metadata.get("document_role") or infer_document_role(haystack, document.source_type)
         family = metadata.get("document_family") or document_family_key(document)
         updates = {"subject": subject, "grade": grade, "textbook_version": textbook, "chapter": chapter, "document_role": role}
