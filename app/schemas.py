@@ -99,6 +99,14 @@ class NeighborResponse(BaseModel):
     nodes: list[NeighborNode]
 
 
+class SubjectClassificationResponse(BaseModel):
+    subject: str | None
+    confidence: float
+    margin: float
+    source: str
+    scores: dict[str, float]
+
+
 class KnowledgeStateUpdate(BaseModel):
     status: KnowledgeStatus
     note: str | None = Field(default=None, max_length=4000)
@@ -134,6 +142,7 @@ class LearningSummary(BaseModel):
 class ConversationCreate(BaseModel):
     mode: QaMode = QaMode.knowledge
     knowledge_node_id: str | None = None
+    subject: str | None = Field(default=None, min_length=1, max_length=40)
     title: str | None = Field(default=None, max_length=120)
 
 
@@ -175,6 +184,7 @@ class ConversationResponse(ApiModel):
     title: str
     mode: QaMode
     knowledge_node_id: str | None
+    subject: str | None
     created_at: datetime
     updated_at: datetime
     messages: list[ChatMessageResponse] = Field(default_factory=list)
@@ -186,6 +196,7 @@ class QaResult(BaseModel):
     assistant_message: ChatMessageResponse
     credits_charged: int
     balance: int
+    subject: str | None = None
 
 
 class CreditAccountResponse(ApiModel):
@@ -224,6 +235,9 @@ class FeedbackResponse(ApiModel):
 
 class AdminFeedbackResponse(FeedbackResponse):
     user_id: str
+    review_note: str | None = None
+    reviewed_by: str | None = None
+    reviewed_at: datetime | None = None
 
 
 class FeedbackReview(BaseModel):
@@ -275,6 +289,61 @@ class KnowledgeEdgeCreate(BaseModel):
     explanation: str = Field(min_length=2, max_length=255)
 
 
+class KnowledgeEdgeUpdate(BaseModel):
+    edge_type: EdgeType | None = None
+    explanation: str | None = Field(default=None, min_length=2, max_length=255)
+
+
+class KnowledgeEdgeResponse(ApiModel):
+    id: str
+    source_node_id: str
+    target_node_id: str
+    edge_type: EdgeType
+    explanation: str
+
+
+class KnowledgeNodeVersionResponse(ApiModel):
+    id: str
+    node_id: str
+    version: int
+    snapshot: dict
+    change_note: str | None
+    status: str
+    created_by: str | None
+    created_at: datetime
+    published_at: datetime | None
+    withdrawn_at: datetime | None
+
+
+class KnowledgeNodeRestore(BaseModel):
+    version: int = Field(ge=1)
+    change_note: str | None = Field(default=None, max_length=255)
+    publish: bool = False
+
+
+class KnowledgeNodeAction(BaseModel):
+    change_note: str | None = Field(default=None, max_length=255)
+
+
+class AuditLogResponse(ApiModel):
+    id: str
+    actor_user_id: str | None
+    action: str
+    target_type: str
+    target_id: str | None
+    details: dict
+    created_at: datetime
+
+
+class ModelCostResponse(BaseModel):
+    provider: str | None
+    model: str | None
+    calls: int
+    input_tokens: int
+    output_tokens: int
+    credits: int
+
+
 class AdminCreditAdjustment(BaseModel):
     amount: int = Field(ge=-100000, le=100000)
     reason: str = Field(min_length=2, max_length=255)
@@ -286,3 +355,6 @@ class HealthResponse(BaseModel):
     ai_provider: str
     ai_model: str
     ai_ready: bool
+    retrieval_provider: str
+    retrieval_model: str
+    retrieval_ready: bool

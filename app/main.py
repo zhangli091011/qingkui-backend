@@ -9,6 +9,7 @@ from app.db import Base, SessionLocal, engine
 from app.routers import admin, auth, credits, feedback, knowledge, learning, qa
 from app.schemas import HealthResponse
 from app.seed import seed_demo_content
+from app.admin_ui import admin_page
 
 
 @asynccontextmanager
@@ -47,6 +48,11 @@ for router in (
     app.include_router(router, prefix=settings.api_prefix)
 
 
+@app.get("/admin", include_in_schema=False)
+def admin_console():
+    return admin_page()
+
+
 @app.get("/health", response_model=HealthResponse, tags=["系统"])
 def health() -> HealthResponse:
     database_status = "ok"
@@ -61,4 +67,11 @@ def health() -> HealthResponse:
         ai_provider=settings.ai_provider,
         ai_model=settings.deepseek_model if settings.ai_provider == "deepseek" else "grounded-stub",
         ai_ready=settings.ai_ready,
+        retrieval_provider=settings.retrieval_provider,
+        retrieval_model=(
+            settings.dashscope_embedding_model
+            if settings.retrieval_provider == "bailian"
+            else "lexical"
+        ),
+        retrieval_ready=settings.retrieval_ready,
     )

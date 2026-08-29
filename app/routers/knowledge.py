@@ -4,8 +4,9 @@ from sqlalchemy.orm import joinedload
 
 from app.deps import CurrentUser, DbSession
 from app.models import KnowledgeEdge, KnowledgeNode, KnowledgeStatus, UserKnowledgeState
-from app.schemas import KnowledgeNodeDetail, KnowledgeNodeSummary, NeighborNode, NeighborResponse
+from app.schemas import KnowledgeNodeDetail, KnowledgeNodeSummary, NeighborNode, NeighborResponse, SubjectClassificationResponse
 from app.services.knowledge import search_nodes, status_for
+from app.subjects import SUBJECTS, classify_subject_semantic, infer_subject
 
 
 router = APIRouter(prefix="/knowledge", tags=["知识图谱"])
@@ -28,6 +29,27 @@ def search(
     limit: int = Query(default=20, ge=1, le=50),
 ) -> list[KnowledgeNodeSummary]:
     return [_summary(db, user.id, node) for node in search_nodes(db, q, limit)]
+
+
+@router.get("/subjects", response_model=list[str])
+def subjects(user: CurrentUser) -> list[str]:
+    """Return the stable subject catalog for clients and import tooling."""
+    return list(SUBJECTS)
+
+
+@router.get("/classify-subject", response_model=SubjectClassificationResponse)
+def classify_subject(user: CurrentUser, q: str = Query(min_length=1, max_length=200)) -> SubjectClassificationResponse:
+    """Return semantic subject scores for UI previews and manual correction."""
+    result = classify_subject_semantic(q)
+    if result.source == "unavailable":
+        result = result.__class__(infer_subject(q), 0.0, 0.0, "keyword_fallback", {})
+    return SubjectClassificationResponse(
+        subject=result.subject,
+        confidence=result.confidence,
+        margin=result.margin,
+        source=result.source,
+        scores=result.scores,
+    )
 
 
 @router.get("/nodes/{node_id}", response_model=KnowledgeNodeDetail)
@@ -63,7 +85,8 @@ def neighbors(
     for edge in edges:
         other_id = edge.target_node_id if edge.source_node_id == node_id else edge.source_node_id
         node = db.get(KnowledgeNode, other_id)
-        if node is None or not node.is_active:
+        # Auto-extracted graph nodes remain hidden from learners until review.
+        if node is None or not node.is_active or node.review_status != "approved":
             continue
         values = _summary(db, user.id, node).model_dump()
         items.append(NeighborNode(**values, edge_type=edge.edge_type, edge_explanation=edge.explanation))

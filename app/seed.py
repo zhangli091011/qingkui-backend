@@ -1,7 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import EdgeType, KnowledgeEdge, KnowledgeNode, KnowledgeSource
+from app.models import EdgeType, KnowledgeEdge, KnowledgeNode, KnowledgeNodeVersion, KnowledgeSource
 
 
 SOURCE_ID = "source-qingkui-demo-math-v1"
@@ -78,6 +78,9 @@ EDGES = [
     ("quadratic_function", "discriminant", EdgeType.related, "判别式连接方程根与二次函数零点。"),
     ("quadratic_function", "quadratic_inequality", EdgeType.extension, "二次函数图像可用于求解一元二次不等式。"),
     ("discriminant", "quadratic_inequality", EdgeType.prerequisite, "根的位置决定不等式解集的端点。"),
+    ("linear_function", "quadratic_function", EdgeType.confused_with, "一次函数与二次函数都可用解析式和图像描述，但次数与图像形状不同。"),
+    ("quadratic_function", "quadratic_inequality", EdgeType.question_type, "二次函数常见题型包括最值、参数与图像综合题。"),
+    ("discriminant", "quadratic_inequality", EdgeType.question_type, "判别式常用于判断根的个数和不等式恒成立条件。"),
 ]
 
 
@@ -106,6 +109,32 @@ def seed_demo_content(db: Session) -> None:
                 )
             )
     db.flush()
+    for node in db.scalars(select(KnowledgeNode)):
+        if db.scalar(select(KnowledgeNodeVersion.id).where(KnowledgeNodeVersion.node_id == node.id)) is None:
+            db.add(
+                KnowledgeNodeVersion(
+                    node_id=node.id,
+                    version=node.version,
+                    snapshot={
+                        "id": node.id,
+                        "name": node.name,
+                        "subject": node.subject,
+                        "grade": node.grade,
+                        "textbook_version": node.textbook_version,
+                        "chapter": node.chapter,
+                        "definition": node.definition,
+                        "explanation": node.explanation,
+                        "common_errors": list(node.common_errors or []),
+                        "question_types": list(node.question_types or []),
+                        "source_id": node.source_id,
+                        "source_excerpt": node.source_excerpt,
+                        "review_status": node.review_status,
+                        "is_active": node.is_active,
+                    },
+                    status="published" if node.review_status == "approved" and node.is_active else "draft",
+                    change_note="种子初始版本",
+                )
+            )
     for source_id, target_id, edge_type, explanation in EDGES:
         exists = db.scalar(
             select(KnowledgeEdge.id).where(
