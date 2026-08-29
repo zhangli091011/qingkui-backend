@@ -9,6 +9,17 @@ services:
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?Set DEEPSEEK_API_KEY}
       DEEPSEEK_MODEL: deepseek-v4-flash
+      RETRIEVAL_PROVIDER: ${RETRIEVAL_PROVIDER:-lexical}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      DASHSCOPE_BASE_URL: ${DASHSCOPE_BASE_URL:-https://dashscope.aliyuncs.com}
+      DASHSCOPE_API_MODE: ${DASHSCOPE_API_MODE:-native}
+      DASHSCOPE_EMBEDDING_MODEL: ${DASHSCOPE_EMBEDDING_MODEL:-text-embedding-v4}
+      DASHSCOPE_OCR_MODEL: ${DASHSCOPE_OCR_MODEL:-qwen3.5-ocr}
+      DASHSCOPE_RERANK_MODEL: ${DASHSCOPE_RERANK_MODEL:-gte-rerank-v2}
+      DASHSCOPE_RERANK_ENABLED: ${DASHSCOPE_RERANK_ENABLED:-true}
+      RETRIEVAL_VECTOR_INDEX_PATH: /data/qingkui-vectors.npz
+    volumes:
+      - ${QINGKUI_VECTOR_INDEX_HOST_PATH:-./data/qingkui-vectors.npz}:/data/qingkui-vectors.npz:ro
     depends_on:
       postgres:
         condition: service_healthy

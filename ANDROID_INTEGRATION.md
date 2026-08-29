@@ -35,6 +35,15 @@
 3. 显示 `assistant_message.content`；来源面板读取 `citations`。
 4. 用响应里的 `balance` 原子更新额度，不在客户端自行减一。
 
+推荐使用 `POST qa/sessions/{id}/messages/stream`。请求体相同，响应为 `text/event-stream`：
+
+- `meta`：返回会话 ID 和预计额度。
+- `delta`：`content` 是新增文本，追加到同一条助手消息。
+- `done`：返回完整 `QaResult`，此时更新余额、消息 ID 和引用。
+- `error`：返回 `status/detail`；失败不会落库或扣额度。
+
+服务端只在 AI 流完整结束后写入消息并扣费。客户端断线时应移除半截回答并允许重试。
+
 `mode`：`knowledge`、`problem`、`error`、`review`、`explore`、`verify`。
 
 `help_level`：`keyword`、`next_step`、`approach`、`full`、`conclusion`。

@@ -1,6 +1,7 @@
 .env
 .env.local
 .venv/
+.local/
 __pycache__/
 .pytest_cache/
 .mypy_cache/
@@ -8,6 +9,11 @@ __pycache__/
 .coverage
 htmlcov/
 *.db
+*.npz
 *.egg-info/
 build/
 dist/
+*.log
+history-qa-answers*.json
+history-qa-answers*.md
+qa-benchmark-report*.json
