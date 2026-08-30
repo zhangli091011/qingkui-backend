@@ -8,11 +8,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import IdempotencyRequest
+from app.config import settings
 
 
 KEY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
@@ -56,6 +57,13 @@ def reserve_idempotency(
     if key is None:
         return None
     normalized = _validate_key(key)
+    db.execute(
+        delete(IdempotencyRequest).where(
+            IdempotencyRequest.user_id == user_id,
+            IdempotencyRequest.updated_at
+            < datetime.now(timezone.utc) - timedelta(hours=settings.idempotency_retention_hours),
+        )
+    )
     record = IdempotencyRequest(
         user_id=user_id,
         scope=scope,

@@ -13,7 +13,7 @@ def test_full_migration_round_trip_on_empty_database(tmp_path, monkeypatch) -> N
     command.upgrade(config, "head")
     engine = create_engine(database_url)
     with engine.connect() as connection:
-        assert connection.execute(text("select version_num from alembic_version")).scalar_one() == "20260830_0010"
+        assert connection.execute(text("select version_num from alembic_version")).scalar_one() == "20260830_0011"
         assert "idempotency_requests" in inspect(connection).get_table_names()
     engine.dispose()
 
@@ -26,6 +26,6 @@ def test_full_migration_round_trip_on_empty_database(tmp_path, monkeypatch) -> N
     command.upgrade(config, "head")
     engine = create_engine(database_url)
     with engine.connect() as connection:
-        assert connection.execute(text("select version_num from alembic_version")).scalar_one() == "20260830_0010"
+        assert connection.execute(text("select version_num from alembic_version")).scalar_one() == "20260830_0011"
         assert "idempotency_requests" in inspect(connection).get_table_names()
     engine.dispose()

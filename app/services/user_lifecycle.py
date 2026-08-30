@@ -7,16 +7,19 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     AuditLog,
+    ClassMembership,
     Conversation,
     CreditAccount,
     CreditLedger,
     FeedbackSubmission,
+    IdempotencyRequest,
     KnowledgeNodeVersion,
     LearningEvent,
     MistakeAsset,
     MistakeProblem,
     ModelCall,
     RefreshSession,
+    SchoolMembership,
     User,
     UserKnowledgeState,
 )
@@ -37,6 +40,9 @@ def erase_user_account(db: Session, user: User, *, delete_external_assets: bool 
     db.execute(delete(CreditLedger).where(CreditLedger.user_id == user_id))
     db.execute(delete(CreditAccount).where(CreditAccount.user_id == user_id))
     db.execute(delete(RefreshSession).where(RefreshSession.user_id == user_id))
+    db.execute(delete(IdempotencyRequest).where(IdempotencyRequest.user_id == user_id))
+    db.execute(delete(ClassMembership).where(ClassMembership.user_id == user_id))
+    db.execute(delete(SchoolMembership).where(SchoolMembership.user_id == user_id))
     db.execute(update(ModelCall).where(ModelCall.user_id == user_id).values(user_id=None))
     db.execute(update(KnowledgeNodeVersion).where(KnowledgeNodeVersion.created_by == user_id).values(created_by=None))
     db.execute(update(AuditLog).where(AuditLog.actor_user_id == user_id).values(actor_user_id=None))

@@ -76,6 +76,8 @@ class Settings(BaseSettings):
     ocr_review_threshold: float = 0.85
     user_upload_max_bytes: int = 10 * 1024 * 1024
     user_upload_max_pixels: int = 20_000_000
+    organizations_enabled: bool = False
+    idempotency_retention_hours: int = 24
 
     @field_validator("cors_origins", mode="before")
     @classmethod

@@ -67,6 +67,97 @@ class DeviceSessionResponse(BaseModel):
     active: bool
 
 
+class SchoolCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    code: str = Field(min_length=2, max_length=40, pattern=r"^[a-zA-Z0-9_-]+$")
+
+
+class SchoolResponse(ApiModel):
+    id: str
+    name: str
+    code: str
+    status: str
+    created_at: datetime
+
+
+class SchoolMembershipResponse(ApiModel):
+    id: str
+    school_id: str
+    role: str
+    status: str
+    joined_at: datetime
+    school: SchoolResponse
+
+
+class OrganizationMeResponse(BaseModel):
+    memberships: list[SchoolMembershipResponse]
+
+
+class SchoolClassCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    grade: str | None = Field(default=None, max_length=40)
+    academic_year: str = Field(min_length=4, max_length=20)
+
+
+class SchoolClassResponse(ApiModel):
+    id: str
+    school_id: str
+    name: str
+    grade: str | None
+    academic_year: str
+    status: str
+    created_at: datetime
+
+
+class OrganizationInviteCreate(BaseModel):
+    class_id: str | None = Field(default=None, max_length=36)
+    member_role: str = Field(pattern=r"^(teacher|student)$")
+    max_uses: int = Field(default=1, ge=1, le=500)
+    expires_hours: int = Field(default=72, ge=1, le=24 * 30)
+
+
+class OrganizationInviteResponse(ApiModel):
+    id: str
+    school_id: str
+    class_id: str | None
+    member_role: str
+    max_uses: int
+    use_count: int
+    expires_at: datetime
+    is_active: bool
+    code: str
+
+
+class OrganizationInviteRedeem(BaseModel):
+    code: str = Field(min_length=8, max_length=128)
+
+
+class OrganizationJoinResponse(BaseModel):
+    school: SchoolResponse
+    school_role: str
+    classroom: SchoolClassResponse | None
+    joined: bool
+
+
+class ClassStudentOverview(BaseModel):
+    anonymous_id: str
+    joined_at: datetime
+    last_activity_at: datetime | None
+    questions: int
+    mistakes: int
+    verified_nodes: int
+
+
+class ClassOverviewResponse(BaseModel):
+    classroom: SchoolClassResponse
+    student_count: int
+    active_7d_students: int
+    questions: int
+    mistakes: int
+    verified_nodes: int
+    students: list[ClassStudentOverview]
+
+
 class SourceResponse(ApiModel):
     id: str
     title: str

@@ -122,6 +122,8 @@ DEEPSEEK_MODEL=deepseek-v4-flash
 | 额度调整 | `POST /api/admin/credits/{user_id}/adjust` |
 | 成本与审计 | `GET /api/admin/model-costs`、`/audit-logs` |
 
+V2 学校、班级、邀请码和匿名教师概览已具备隔离模型与接口，但默认由 `ORGANIZATIONS_ENABLED=false` 关闭。启用前必须完成学校授权和未成年人数据边界确认，详见 `docs/ORGANIZATIONS.md`。
+
 所有业务接口使用 `Authorization: Bearer <access_token>`。DeepSeek 密钥只保存在服务端环境变量中。普通问答消耗 1 额度，完整解析消耗 2 额度；供应商失败时数据库事务回滚，不扣额度。
 
 ## 数据库与部署

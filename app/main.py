@@ -7,7 +7,7 @@ from sqlalchemy import text
 from app.config import settings
 from app.db import Base, SessionLocal, engine
 from app.rate_limit import RateLimitMiddleware
-from app.routers import admin, auth, credits, feedback, knowledge, learning, mistakes, qa
+from app.routers import admin, auth, credits, feedback, knowledge, learning, mistakes, organizations, qa
 from app.schemas import HealthResponse
 from app.seed import seed_demo_content
 from app.admin_ui import admin_page
@@ -43,6 +43,7 @@ for router in (
     qa.router,
     learning.router,
     mistakes.router,
+    organizations.router,
     credits.router,
     credits.admin_router,
     feedback.router,
