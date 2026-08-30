@@ -227,6 +227,31 @@ class LearningEventResponse(ApiModel):
     created_at: datetime
 
 
+class LearningCheckChoice(BaseModel):
+    id: str
+    text: str
+
+
+class LearningCheckResponse(ApiModel):
+    id: str
+    node_id: str
+    prompt: str
+    choices: list[LearningCheckChoice]
+    status: str
+    expires_at: datetime
+
+
+class LearningCheckSubmit(BaseModel):
+    choice_id: str = Field(min_length=8, max_length=64)
+
+
+class LearningCheckResult(BaseModel):
+    attempt_id: str
+    passed: bool
+    status: str
+    state: "LearningSummaryItem"
+
+
 class LearningSummaryItem(KnowledgeNodeSummary):
     updated_at: datetime
     note: str | None

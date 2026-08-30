@@ -92,6 +92,12 @@ def test_analysis_failure_does_not_charge_and_is_cross_user_private(client: Test
 def test_server_numeric_validation_overrides_client_and_controls_mastery(client: TestClient, account) -> None:
     _, headers = account
     mistake = _create(client, headers, suffix="（校验）")
+    linked = client.patch(
+        f"/api/mistakes/{mistake['id']}",
+        json={"knowledge_node_id": "quadratic_function"},
+        headers=headers,
+    )
+    assert linked.status_code == 200
     practice = client.post(
         f"/api/mistakes/{mistake['id']}/practices",
         json={"question_text": "计算 2+2", "answer_reference": "答案：4"},
@@ -110,6 +116,8 @@ def test_server_numeric_validation_overrides_client_and_controls_mastery(client:
     assert result["validation_details"]["authoritative"] is True
     assert result["validation_details"]["client"] == {"claimed": "wrong"}
     assert client.get(f"/api/mistakes/{mistake['id']}", headers=headers).json()["study_status"] == "mastered"
+    summary = client.get("/api/learning/summary", headers=headers).json()
+    assert any(item["id"] == "quadratic_function" for item in summary["verified"])
 
 
 def test_non_numeric_self_report_never_counts_as_verified_mastery(client: TestClient, account) -> None:

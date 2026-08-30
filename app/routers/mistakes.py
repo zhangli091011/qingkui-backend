@@ -12,11 +12,13 @@ from app.models import (
     CreditAccount,
     CreditLedger,
     KnowledgeNode,
+    KnowledgeStatus,
     LearningEvent,
     MistakeAsset,
     MistakePractice,
     MistakeProblem,
     OcrTask,
+    UserKnowledgeState,
     new_id,
 )
 from app.schemas import (
@@ -515,6 +517,17 @@ def submit_practice(
     practice.completed_at = datetime.now(timezone.utc)
     mistake.attempt_count += 1
     mistake.study_status = "mastered" if resolved_correct is True and authoritative else "reviewing"
+    if resolved_correct is True and authoritative and mistake.knowledge_node_id:
+        state = db.scalar(
+            select(UserKnowledgeState).where(
+                UserKnowledgeState.user_id == user.id,
+                UserKnowledgeState.node_id == mistake.knowledge_node_id,
+            )
+        )
+        if state is None:
+            state = UserKnowledgeState(user_id=user.id, node_id=mistake.knowledge_node_id)
+            db.add(state)
+        state.status = KnowledgeStatus.verified
     db.add(
         LearningEvent(
             user_id=user.id,

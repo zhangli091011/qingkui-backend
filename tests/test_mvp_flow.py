@@ -80,16 +80,61 @@ def test_verified_requires_evidence(client: TestClient, account):
     )
     assert direct.status_code == 409
 
-    event = client.post(
+    forged_event = client.post(
         "/api/learning/events",
         json={"event_type": "completed_check", "node_id": "discriminant", "event_data": {"passed": True}},
         headers=headers,
     )
-    assert event.status_code == 201
+    assert forged_event.status_code == 409
+
+    check = client.post("/api/learning/nodes/discriminant/checks", headers=headers)
+    assert check.status_code == 201, check.text
+    attempt = check.json()
+    node = client.get("/api/knowledge/nodes/discriminant", headers=headers).json()
+    correct_choice = next(choice for choice in attempt["choices"] if choice["text"] == node["definition"])
+    submitted = client.post(
+        f"/api/learning/checks/{attempt['id']}/submit",
+        json={"choice_id": correct_choice["id"]},
+        headers=headers,
+    )
+    assert submitted.status_code == 200, submitted.text
+    assert submitted.json()["passed"] is True
+    assert submitted.json()["state"]["status"] == "verified"
+    assert client.post(
+        f"/api/learning/checks/{attempt['id']}/submit",
+        json={"choice_id": correct_choice["id"]},
+        headers=headers,
+    ).status_code == 409
     summary = client.get("/api/learning/summary", headers=headers).json()
     item = next(item for item in summary["recent"] if item["id"] == "discriminant")
     assert item["status"] == "verified"
     assert any(entry["id"] == "discriminant" for entry in summary["verified"])
+
+
+def test_understanding_check_is_user_scoped_and_failed_answer_marks_unstable(client: TestClient, account):
+    _, headers = account
+    attempt = client.post("/api/learning/nodes/quadratic_function/checks", headers=headers).json()
+    other = client.post(
+        "/api/auth/register",
+        json={"username": "check_other", "password": "student-pass-456", "nickname": "另一位同学"},
+    ).json()
+    other_headers = {"Authorization": f"Bearer {other['access_token']}"}
+    assert client.post(
+        f"/api/learning/checks/{attempt['id']}/submit",
+        json={"choice_id": attempt["choices"][0]["id"]},
+        headers=other_headers,
+    ).status_code == 404
+
+    node = client.get("/api/knowledge/nodes/quadratic_function", headers=headers).json()
+    wrong = next(choice for choice in attempt["choices"] if choice["text"] != node["definition"])
+    result = client.post(
+        f"/api/learning/checks/{attempt['id']}/submit",
+        json={"choice_id": wrong["id"]},
+        headers=headers,
+    )
+    assert result.status_code == 200
+    assert result.json()["passed"] is False
+    assert result.json()["state"]["status"] == "unstable"
 
 
 def test_refresh_rotates_session(client: TestClient, account):

@@ -1,9 +1,15 @@
+import secrets
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
 from app.deps import CurrentUser, DbSession
-from app.models import KnowledgeNode, KnowledgeStatus, LearningEvent, UserKnowledgeState
+from app.models import KnowledgeNode, KnowledgeStatus, LearningCheckAttempt, LearningEvent, UserKnowledgeState
 from app.schemas import (
+    LearningCheckResponse,
+    LearningCheckResult,
+    LearningCheckSubmit,
     KnowledgeStateUpdate,
     LearningEventCreate,
     LearningEventResponse,
@@ -31,6 +37,8 @@ def _get_or_create_state(db: DbSession, user_id: str, node_id: str) -> UserKnowl
 
 @router.post("/events", response_model=LearningEventResponse, status_code=201)
 def create_event(payload: LearningEventCreate, db: DbSession, user: CurrentUser) -> LearningEvent:
+    if payload.event_type == "completed_check":
+        raise HTTPException(status_code=409, detail="理解检查必须通过专用接口由服务端判分")
     state: UserKnowledgeState | None = None
     if payload.node_id:
         if db.get(KnowledgeNode, payload.node_id) is None:
@@ -43,8 +51,6 @@ def create_event(payload: LearningEventCreate, db: DbSession, user: CurrentUser)
             state.status = KnowledgeStatus.understood
         elif payload.event_type == "marked_confused":
             state.status = KnowledgeStatus.unstable
-        elif payload.event_type == "completed_check" and payload.event_data.get("passed") is True:
-            state.status = KnowledgeStatus.verified
         elif payload.event_type == "favorited":
             state.is_favorite = bool(payload.event_data.get("is_favorite", True))
     event = LearningEvent(
@@ -57,6 +63,126 @@ def create_event(payload: LearningEventCreate, db: DbSession, user: CurrentUser)
     db.commit()
     db.refresh(event)
     return event
+
+
+@router.post("/nodes/{node_id}/checks", response_model=LearningCheckResponse, status_code=201)
+def create_check(node_id: str, db: DbSession, user: CurrentUser) -> LearningCheckAttempt:
+    node = db.get(KnowledgeNode, node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail="知识点不存在")
+    if not node.is_active or node.review_status != "approved" or not node.definition.strip():
+        raise HTTPException(status_code=409, detail="该知识点尚未具备可用的理解检查")
+
+    candidates = list(
+        db.scalars(
+            select(KnowledgeNode)
+            .where(
+                KnowledgeNode.id != node.id,
+                KnowledgeNode.subject == node.subject,
+                KnowledgeNode.grade == node.grade,
+                KnowledgeNode.is_active.is_(True),
+                KnowledgeNode.review_status == "approved",
+            )
+            .order_by(KnowledgeNode.updated_at.desc())
+            .limit(30)
+        )
+    )
+    definitions: list[KnowledgeNode] = []
+    seen = {node.definition.strip()}
+    for candidate in candidates:
+        definition = candidate.definition.strip()
+        if definition and definition not in seen:
+            definitions.append(candidate)
+            seen.add(definition)
+    if len(definitions) < 2:
+        raise HTTPException(status_code=409, detail="同范围内缺少足够的已审核干扰项")
+
+    selected = secrets.SystemRandom().sample(definitions, min(3, len(definitions))) + [node]
+    secrets.SystemRandom().shuffle(selected)
+    choices = [{"id": secrets.token_urlsafe(12), "text": item.definition.strip()} for item in selected]
+    correct_index = selected.index(node)
+    now = datetime.now(timezone.utc)
+    attempt = LearningCheckAttempt(
+        user_id=user.id,
+        node_id=node.id,
+        prompt=f"以下哪项是“{node.name}”的准确定义？",
+        choices=choices,
+        correct_choice_id=choices[correct_index]["id"],
+        status="pending",
+        expires_at=now + timedelta(minutes=15),
+    )
+    db.add(attempt)
+    db.commit()
+    db.refresh(attempt)
+    return attempt
+
+
+@router.post("/checks/{attempt_id}/submit", response_model=LearningCheckResult)
+def submit_check(
+    attempt_id: str,
+    payload: LearningCheckSubmit,
+    db: DbSession,
+    user: CurrentUser,
+) -> LearningCheckResult:
+    attempt = db.scalar(
+        select(LearningCheckAttempt).where(
+            LearningCheckAttempt.id == attempt_id,
+            LearningCheckAttempt.user_id == user.id,
+        )
+    )
+    if attempt is None:
+        raise HTTPException(status_code=404, detail="理解检查不存在")
+    if attempt.status != "pending":
+        raise HTTPException(status_code=409, detail="该理解检查已经提交")
+    now = datetime.now(timezone.utc)
+    expires_at = attempt.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at <= now:
+        attempt.status = "expired"
+        db.commit()
+        raise HTTPException(status_code=410, detail="理解检查已过期，请重新开始")
+    valid_choice_ids = {item["id"] for item in attempt.choices}
+    if payload.choice_id not in valid_choice_ids:
+        raise HTTPException(status_code=422, detail="选项不属于本次理解检查")
+
+    passed = secrets.compare_digest(payload.choice_id, attempt.correct_choice_id)
+    attempt.status = "passed" if passed else "failed"
+    attempt.submitted_at = now
+    state = _get_or_create_state(db, user.id, attempt.node_id)
+    state.status = KnowledgeStatus.verified if passed else KnowledgeStatus.unstable
+    db.add(
+        LearningEvent(
+            user_id=user.id,
+            node_id=attempt.node_id,
+            event_type="completed_check",
+            event_data={
+                "attempt_id": attempt.id,
+                "passed": passed,
+                "format": "definition_choice",
+            },
+        )
+    )
+    db.commit()
+    node = db.get(KnowledgeNode, attempt.node_id)
+    assert node is not None
+    return LearningCheckResult(
+        attempt_id=attempt.id,
+        passed=passed,
+        status=attempt.status,
+        state=LearningSummaryItem(
+            id=node.id,
+            name=node.name,
+            subject=node.subject,
+            grade=node.grade,
+            chapter=node.chapter,
+            definition=node.definition,
+            status=state.status,
+            updated_at=state.updated_at,
+            note=state.note,
+            is_favorite=state.is_favorite,
+        ),
+    )
 
 
 @router.patch("/nodes/{node_id}/state", response_model=LearningSummaryItem)

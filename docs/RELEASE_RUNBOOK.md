@@ -49,3 +49,4 @@
 - `/api/admin/model-costs` 支持 `start_at`、`end_at`、`feature`、`provider` 筛选，展示成功/失败调用、失败率、平均延迟、Token 和额度消耗。
 - 主动告警使用 `operational-alert-notify`，默认关闭；配置、负载边界和调度方式见 `docs/OPERATIONAL_ALERTS.md`。
 - 发布回归至少制造一次受控成功调用和一次模拟失败，确认失败调用不扣额度且后台统计可见。
+- “已验证”必须符合 `docs/LEARNING_EVIDENCE.md`；发布回归应确认客户端伪造 `completed_check` 被拒绝，检查重复提交被拒绝。
