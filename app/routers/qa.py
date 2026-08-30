@@ -1,4 +1,5 @@
 import json
+import re
 
 from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -18,7 +19,15 @@ from app.models import (
     Message,
     UserKnowledgeState,
 )
-from app.schemas import ConversationCreate, ConversationMessageCreate, ConversationResponse, QaResult
+from app.schemas import (
+    ConversationCreate,
+    ConversationMessageCreate,
+    ConversationResponse,
+    QaIntentOption,
+    QaIntentRequest,
+    QaIntentResult,
+    QaResult,
+)
 from app.services.ai import AiStreamState, PROMPT_VERSION, answer_question, stream_answer_text
 from app.services.content_safety import (
     BufferedSafetyFilter,
@@ -38,6 +47,47 @@ from app.subjects import normalize_subject, resolve_subject
 
 
 router = APIRouter(prefix="/qa", tags=["AI 问答"])
+
+
+_VAGUE_QUESTIONS = {
+    "帮我看看", "这个怎么做", "这道怎么做", "不会", "我不会", "讲一下", "解释一下",
+    "为什么", "怎么办", "帮帮我", "看一下", "怎么弄", "这是什么",
+}
+
+
+def _needs_clarification(content: str) -> bool:
+    normalized = re.sub(r"[\s，。！？、,.!?：:；;]", "", content).casefold()
+    if normalized in _VAGUE_QUESTIONS:
+        return True
+    return len(normalized) <= 10 and bool(
+        re.fullmatch(r"(?:这个|这道题?|它)?(?:怎么做|怎么看|讲一下|解释一下|为什么|不会|看一下)", normalized)
+    )
+
+
+@router.post("/intent", response_model=QaIntentResult)
+def clarify_intent(payload: QaIntentRequest, db: DbSession, user: CurrentUser) -> QaIntentResult:
+    decision = moderate_text(payload.content)
+    if not decision.allowed:
+        record_safety_event(
+            db, user_id=user.id, action="safety.qa_input_blocked", decision=decision,
+            content=payload.content, target_type="qa_intent",
+        )
+        db.commit()
+        raise HTTPException(status_code=422, detail=decision.message, headers={"X-Content-Safety": "blocked"})
+    subject = resolve_subject(payload.content)
+    if not _needs_clarification(payload.content):
+        return QaIntentResult(needs_clarification=False, subject=subject)
+    return QaIntentResult(
+        needs_clarification=True,
+        subject=subject,
+        prompt="你希望我怎样帮助你？",
+        options=[
+            QaIntentOption(id="explain", label="解释概念", instruction="解释相关概念、定义和关键性质", mode="knowledge"),
+            QaIntentOption(id="solve", label="分析题目", instruction="分析题目条件并给出解题思路", mode="problem"),
+            QaIntentOption(id="diagnose", label="检查错误", instruction="检查我的作答并定位错误原因", mode="error"),
+            QaIntentOption(id="review", label="安排复习", instruction="梳理薄弱点并制定复习顺序", mode="review"),
+        ],
+    )
 
 
 def _enforce_safe_input(db: DbSession, user_id: str, content: str, conversation_id: str) -> None:
@@ -374,7 +424,13 @@ def _stream_message(
             db.commit()
             yield _sse("error", {"status": 402, "detail": "额度不足"})
             return
-        yield _sse("meta", {"conversation_id": conversation.id, "credits_required": cost})
+        try:
+            yield _sse("meta", {"conversation_id": conversation.id, "credits_required": cost})
+        except GeneratorExit:
+            db.rollback()
+            fail_idempotency(db, idempotency_request_id)
+            db.commit()
+            raise
         subject = resolve_subject(payload.content) or normalize_subject(conversation.subject)
         if subject and conversation.subject != subject:
             conversation.subject = subject

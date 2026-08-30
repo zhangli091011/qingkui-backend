@@ -9,11 +9,12 @@ from sqlalchemy import func, select
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import AuditLog, ContentContribution, CreditLedger, FeedbackSubmission, Message, MistakeProblem
+from app.models import AuditLog, ContentContribution, CreditLedger, FeedbackSubmission, IdempotencyRequest, Message, MistakeProblem
 from app.schemas import ConversationMessageCreate, StructuredAnswer
 from app.services import ai
 from app.services.ai import AiResult
 from app.services.idempotency import payload_hash, reserve_idempotency
+from app.routers.qa import _stream_message
 
 
 def _register(client: TestClient, prefix: str) -> tuple[dict, dict[str, str]]:
@@ -361,3 +362,46 @@ def test_user_content_entry_points_block_before_persistence(client: TestClient, 
         )
     assert len(events) == 4
     assert all(unsafe not in str(event.details) for event in events)
+
+
+def test_qa_intent_only_clarifies_genuinely_vague_questions(client: TestClient) -> None:
+    _, headers = _register(client, "qa_intent")
+    vague = client.post("/api/qa/intent", json={"content": "这个怎么做", "mode": "knowledge"}, headers=headers)
+    detailed = client.post(
+        "/api/qa/intent",
+        json={"content": "请写出对数函数的导数公式，并注明底数范围", "mode": "knowledge"},
+        headers=headers,
+    )
+    assert vague.status_code == 200
+    assert vague.json()["needs_clarification"] is True
+    assert {item["id"] for item in vague.json()["options"]} == {"explain", "solve", "diagnose", "review"}
+    assert detailed.status_code == 200
+    assert detailed.json()["needs_clarification"] is False
+    assert detailed.json()["options"] == []
+
+
+def test_stream_cancel_before_generation_does_not_charge_or_persist(client: TestClient) -> None:
+    auth, headers = _register(client, "stream_cancel")
+    session = client.post("/api/qa/sessions", json={"mode": "knowledge"}, headers=headers).json()
+    request = ConversationMessageCreate(content="解释二次函数", help_level="approach")
+    with SessionLocal() as db:
+        before = db.scalar(select(CreditLedger).where(CreditLedger.user_id == auth["user"]["id"]).order_by(CreditLedger.created_at.desc()))
+        reservation = reserve_idempotency(
+            db,
+            user_id=auth["user"]["id"],
+            scope=f"qa:{session['id']}",
+            key=f"cancel-{uuid.uuid4()}",
+            request_hash=payload_hash(request.model_dump(mode="json")),
+        )
+        assert reservation is not None
+        request_id = reservation.request_id
+    stream = _stream_message(session["id"], auth["user"]["id"], request, request_id)
+    assert "event: meta" in next(stream)
+    stream.close()
+    with SessionLocal() as db:
+        record = db.get(IdempotencyRequest, request_id)
+        messages = db.scalar(select(func.count()).select_from(Message).where(Message.conversation_id == session["id"]))
+        ledgers = db.scalar(select(func.count()).select_from(CreditLedger).where(CreditLedger.user_id == auth["user"]["id"], CreditLedger.entry_type == "qa_charge"))
+    assert record is not None and record.status == "failed"
+    assert messages == 0
+    assert ledgers == 0

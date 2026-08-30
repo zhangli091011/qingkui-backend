@@ -451,6 +451,25 @@ class ConversationMessageCreate(BaseModel):
     help_level: HelpLevel = HelpLevel.approach
 
 
+class QaIntentRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=12000)
+    mode: QaMode = QaMode.knowledge
+
+
+class QaIntentOption(BaseModel):
+    id: str
+    label: str
+    instruction: str
+    mode: QaMode
+
+
+class QaIntentResult(BaseModel):
+    needs_clarification: bool
+    subject: str | None = None
+    prompt: str | None = None
+    options: list[QaIntentOption] = Field(default_factory=list)
+
+
 class Citation(BaseModel):
     node_id: str
     node_name: str
