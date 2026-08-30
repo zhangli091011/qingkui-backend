@@ -129,4 +129,5 @@ def summary(db: DbSession, user: CurrentUser) -> LearningSummary:
         recent=items[:20],
         review=[item for item in items if item.status in (KnowledgeStatus.unstable, KnowledgeStatus.to_explore)],
         error_prone=[item for item in items if item.status == KnowledgeStatus.error_prone],
+        verified=[item for item in items if item.status == KnowledgeStatus.verified],
     )

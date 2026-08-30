@@ -237,6 +237,7 @@ class LearningSummary(BaseModel):
     recent: list[LearningSummaryItem]
     review: list[LearningSummaryItem]
     error_prone: list[LearningSummaryItem]
+    verified: list[LearningSummaryItem]
 
 
 class MistakeCreate(BaseModel):

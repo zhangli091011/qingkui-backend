@@ -89,6 +89,7 @@ def test_verified_requires_evidence(client: TestClient, account):
     summary = client.get("/api/learning/summary", headers=headers).json()
     item = next(item for item in summary["recent"] if item["id"] == "discriminant")
     assert item["status"] == "verified"
+    assert any(entry["id"] == "discriminant" for entry in summary["verified"])
 
 
 def test_refresh_rotates_session(client: TestClient, account):
