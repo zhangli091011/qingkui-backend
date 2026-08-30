@@ -135,8 +135,10 @@ def test_vector_pointer_retains_one_previous_version(monkeypatch):
     bucket = FakeBucket()
     monkeypatch.setattr(object_storage.settings, "oss_vector_pointer_key", "knowledge/index/current.json")
 
-    object_storage._publish_vector_pointer(bucket, first)
+    initial = object_storage._publish_vector_pointer(bucket, first)
     published = object_storage._publish_vector_pointer(bucket, second)
 
+    assert initial["current"] == first
+    assert initial["previous"] == first
     assert published["current"] == second
     assert published["previous"] == first

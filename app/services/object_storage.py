@@ -190,7 +190,9 @@ def _descriptor(value: Any, *, label: str) -> dict[str, Any]:
 
 def _publish_vector_pointer(bucket: Any, current: dict[str, Any]) -> dict[str, Any]:
     old = _read_json_if_exists(bucket, settings.oss_vector_pointer_key)
-    previous = None
+    # The first published index is also the rollback baseline until a distinct
+    # second version exists. This keeps every production pointer recoverable.
+    previous = current
     if old is not None:
         if old.get("schema") != POINTER_SCHEMA:
             raise RuntimeError("Refusing to replace an unknown vector pointer schema")
@@ -199,6 +201,8 @@ def _publish_vector_pointer(bucket: Any, current: dict[str, Any]) -> dict[str, A
             previous = old_current
         elif old.get("previous") is not None:
             previous = _descriptor(old.get("previous"), label="previous")
+        else:
+            previous = old_current
     pointer = {
         "schema": POINTER_SCHEMA,
         "updated_at": datetime.now(timezone.utc).isoformat(),
