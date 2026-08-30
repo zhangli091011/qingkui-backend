@@ -217,4 +217,7 @@ def test_admin_page_exposes_review_workspaces(client) -> None:
     assert response.status_code == 200
     assert "知识候选审核队列" in response.text
     assert "公式审核队列" in response.text
+    assert "用户与权限" in response.text
+    assert "OCR 任务审核" in response.text
+    assert "错题内容审核" in response.text
     assert "innerHTML" not in response.text

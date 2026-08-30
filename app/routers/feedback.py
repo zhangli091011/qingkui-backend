@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from app.deps import CurrentUser, DbSession
 from sqlalchemy import select
@@ -41,4 +41,35 @@ def submit_feedback(payload: FeedbackCreate, db: DbSession, user: CurrentUser) -
     )
     db.commit()
     db.refresh(feedback)
+    return feedback
+
+
+@router.get("", response_model=list[FeedbackResponse])
+def list_my_feedback(
+    db: DbSession,
+    user: CurrentUser,
+    status_filter: str | None = Query(default=None, alias="status"),
+    limit: int = Query(default=50, ge=1, le=100),
+) -> list[FeedbackSubmission]:
+    statement = (
+        select(FeedbackSubmission)
+        .where(FeedbackSubmission.user_id == user.id)
+        .order_by(FeedbackSubmission.created_at.desc())
+        .limit(limit)
+    )
+    if status_filter:
+        statement = statement.where(FeedbackSubmission.status == status_filter)
+    return list(db.scalars(statement))
+
+
+@router.get("/{feedback_id}", response_model=FeedbackResponse)
+def get_my_feedback(feedback_id: str, db: DbSession, user: CurrentUser) -> FeedbackSubmission:
+    feedback = db.scalar(
+        select(FeedbackSubmission).where(
+            FeedbackSubmission.id == feedback_id,
+            FeedbackSubmission.user_id == user.id,
+        )
+    )
+    if feedback is None:
+        raise HTTPException(status_code=404, detail="反馈不存在")
     return feedback

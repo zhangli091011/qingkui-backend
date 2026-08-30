@@ -58,6 +58,15 @@ class AuthResponse(BaseModel):
     user: UserResponse
 
 
+class DeviceSessionResponse(BaseModel):
+    id: str
+    device_name: str | None
+    expires_at: datetime
+    revoked_at: datetime | None
+    created_at: datetime
+    active: bool
+
+
 class SourceResponse(ApiModel):
     id: str
     title: str
@@ -326,19 +335,67 @@ class FeedbackResponse(ApiModel):
     node_id: str | None
     message_id: str | None
     status: str
+    review_note: str | None = None
+    reviewed_at: datetime | None = None
     created_at: datetime
 
 
 class AdminFeedbackResponse(FeedbackResponse):
     user_id: str
-    review_note: str | None = None
     reviewed_by: str | None = None
-    reviewed_at: datetime | None = None
 
 
 class FeedbackReview(BaseModel):
     status: str = Field(pattern=r"^(pending|accepted|rejected|resolved)$")
     review_note: str | None = Field(default=None, max_length=1000)
+
+
+class AdminUserResponse(BaseModel):
+    id: str
+    username: str
+    email: str | None
+    nickname: str
+    role: UserRole
+    tenant_id: str | None
+    is_active: bool
+    balance: int | None
+    created_at: datetime
+    deleted_at: datetime | None
+
+
+class AdminUserStatusUpdate(BaseModel):
+    is_active: bool
+
+
+class AdminUserRoleUpdate(BaseModel):
+    role: UserRole
+
+
+class AdminOcrTaskResponse(OcrTaskResponse):
+    mistake_id: str
+    user_id: str
+
+
+class AdminOcrTaskDetail(AdminOcrTaskResponse):
+    subject: str | None
+    question_text: str | None
+    corrected_text: str | None
+    student_work: str | None
+    question_goal: str | None
+    asset_mime_type: str
+    asset_size_bytes: int
+
+
+class AdminMistakeResponse(MistakeResponse):
+    user_id: str
+
+
+class AdminMistakeReview(BaseModel):
+    review_status: str | None = Field(default=None, pattern=r"^(draft|needs_review|recognized|confirmed|approved|rejected)$")
+    error_category: str | None = Field(default=None, pattern=r"^(concept|reading|method|calculation|expression|other)$")
+    error_note: str | None = Field(default=None, max_length=2000)
+    knowledge_node_id: str | None = None
+    link_status: str | None = Field(default=None, pattern=r"^(pending|confirmed|rejected)$")
 
 
 class KnowledgeSourceCreate(BaseModel):

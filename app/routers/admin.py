@@ -1,14 +1,39 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 
-from app.deps import AdminUser, DbSession
-from app.models import AuditLog, CreditLedger, FeedbackSubmission, KnowledgeChunk, KnowledgeDocument, KnowledgeEdge, KnowledgeNode, KnowledgeNodeVersion, KnowledgeSource, Message
+from app.deps import AdminUser, DbSession, SuperAdminUser
+from app.models import (
+    AuditLog,
+    CreditAccount,
+    CreditLedger,
+    FeedbackSubmission,
+    KnowledgeChunk,
+    KnowledgeDocument,
+    KnowledgeEdge,
+    KnowledgeNode,
+    KnowledgeNodeVersion,
+    KnowledgeSource,
+    Message,
+    MistakeAsset,
+    MistakeProblem,
+    OcrTask,
+    RefreshSession,
+    User,
+    UserRole,
+)
 from app.schemas import (
     AdminFeedbackResponse,
+    AdminMistakeResponse,
+    AdminMistakeReview,
+    AdminOcrTaskDetail,
+    AdminOcrTaskResponse,
+    AdminUserResponse,
+    AdminUserRoleUpdate,
+    AdminUserStatusUpdate,
     FeedbackReview,
     KnowledgeEdgeCreate,
     KnowledgeEdgeResponse,
@@ -30,6 +55,7 @@ from app.schemas import (
     SourceResponse,
 )
 from app.services.content_governance import node_publication_blockers, governance_report
+from app.services.mistakes import enqueue_ocr_task
 
 
 router = APIRouter(prefix="/admin", tags=["管理后台"])
@@ -589,3 +615,344 @@ def model_costs(db: DbSession, _admin: AdminUser, limit: int = Query(default=100
         aggregates.setdefault(key, {"provider": key[0], "model": key[1], "calls": 0, "input_tokens": 0, "output_tokens": 0, "credits": 0})["credits"] = amount
     result = list(aggregates.values())
     return result[:limit]
+
+
+@router.get("/users", response_model=list[AdminUserResponse])
+def list_users(
+    db: DbSession,
+    _admin: SuperAdminUser,
+    q: str | None = None,
+    role: UserRole | None = None,
+    is_active: bool | None = None,
+    include_deleted: bool = False,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> list[dict]:
+    statement = (
+        select(User, CreditAccount.balance)
+        .outerjoin(CreditAccount, CreditAccount.user_id == User.id)
+        .order_by(User.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    if q:
+        needle = f"%{q.strip()}%"
+        statement = statement.where(
+            or_(User.username.ilike(needle), User.nickname.ilike(needle), User.email.ilike(needle))
+        )
+    if role is not None:
+        statement = statement.where(User.role == role)
+    if is_active is not None:
+        statement = statement.where(User.is_active.is_(is_active))
+    if not include_deleted:
+        statement = statement.where(User.deleted_at.is_(None))
+    return [
+        {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "nickname": user.nickname,
+            "role": user.role,
+            "tenant_id": user.tenant_id,
+            "is_active": user.is_active,
+            "balance": balance,
+            "created_at": user.created_at,
+            "deleted_at": user.deleted_at,
+        }
+        for user, balance in db.execute(statement)
+    ]
+
+
+def _ensure_admin_change_is_safe(db: DbSession, actor: User, target: User, *, removing_admin: bool) -> None:
+    if actor.id == target.id:
+        raise HTTPException(status_code=409, detail="不能在当前会话中修改自己的角色或冻结自己")
+    if target.deleted_at is not None:
+        raise HTTPException(status_code=409, detail="已注销账户不能恢复或变更角色")
+    if removing_admin and target.role == UserRole.admin:
+        active_admins = db.scalar(
+            select(func.count(User.id)).where(
+                User.role == UserRole.admin,
+                User.is_active.is_(True),
+                User.deleted_at.is_(None),
+            )
+        )
+        if int(active_admins or 0) <= 1:
+            raise HTTPException(status_code=409, detail="必须保留至少一个可用系统管理员")
+
+
+@router.patch("/users/{user_id}/status", response_model=AdminUserResponse)
+def update_user_status(
+    user_id: str,
+    payload: AdminUserStatusUpdate,
+    db: DbSession,
+    admin: SuperAdminUser,
+) -> dict:
+    target = db.get(User, user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    _ensure_admin_change_is_safe(db, admin, target, removing_admin=not payload.is_active)
+    target.is_active = payload.is_active
+    if not payload.is_active:
+        db.execute(
+            update(RefreshSession)
+            .where(RefreshSession.user_id == target.id, RefreshSession.revoked_at.is_(None))
+            .values(revoked_at=datetime.now(timezone.utc))
+        )
+    db.add(
+        AuditLog(
+            actor_user_id=admin.id,
+            action="user.unfrozen" if payload.is_active else "user.frozen",
+            target_type="user",
+            target_id=target.id,
+            details={"is_active": payload.is_active},
+        )
+    )
+    db.commit()
+    balance = db.scalar(select(CreditAccount.balance).where(CreditAccount.user_id == target.id))
+    return {
+        "id": target.id,
+        "username": target.username,
+        "email": target.email,
+        "nickname": target.nickname,
+        "role": target.role,
+        "tenant_id": target.tenant_id,
+        "is_active": target.is_active,
+        "balance": balance,
+        "created_at": target.created_at,
+        "deleted_at": target.deleted_at,
+    }
+
+
+@router.patch("/users/{user_id}/role", response_model=AdminUserResponse)
+def update_user_role(
+    user_id: str,
+    payload: AdminUserRoleUpdate,
+    db: DbSession,
+    admin: SuperAdminUser,
+) -> dict:
+    target = db.get(User, user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    _ensure_admin_change_is_safe(
+        db,
+        admin,
+        target,
+        removing_admin=target.role == UserRole.admin and payload.role != UserRole.admin,
+    )
+    old_role = target.role.value
+    target.role = payload.role
+    db.add(
+        AuditLog(
+            actor_user_id=admin.id,
+            action="user.role_changed",
+            target_type="user",
+            target_id=target.id,
+            details={"from": old_role, "to": payload.role.value},
+        )
+    )
+    db.commit()
+    balance = db.scalar(select(CreditAccount.balance).where(CreditAccount.user_id == target.id))
+    return {
+        "id": target.id,
+        "username": target.username,
+        "email": target.email,
+        "nickname": target.nickname,
+        "role": target.role,
+        "tenant_id": target.tenant_id,
+        "is_active": target.is_active,
+        "balance": balance,
+        "created_at": target.created_at,
+        "deleted_at": target.deleted_at,
+    }
+
+
+@router.get("/ocr-tasks", response_model=list[AdminOcrTaskResponse])
+def list_ocr_tasks(
+    db: DbSession,
+    _admin: SuperAdminUser,
+    status_filter: str | None = Query(default=None, alias="status"),
+    requires_review: bool | None = None,
+    user_id: str | None = None,
+    q: str | None = None,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> list[OcrTask]:
+    statement = (
+        select(OcrTask)
+        .join(User, User.id == OcrTask.user_id)
+        .join(MistakeProblem, MistakeProblem.id == OcrTask.mistake_id)
+        .order_by(OcrTask.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    if status_filter:
+        statement = statement.where(OcrTask.status == status_filter)
+    if requires_review is not None:
+        statement = statement.where(OcrTask.requires_review.is_(requires_review))
+    if user_id:
+        statement = statement.where(OcrTask.user_id == user_id)
+    if q:
+        needle = f"%{q.strip()}%"
+        statement = statement.where(
+            or_(User.username.ilike(needle), MistakeProblem.question_text.ilike(needle))
+        )
+    return list(db.scalars(statement))
+
+
+def _admin_ocr_detail(db: DbSession, task_id: str) -> AdminOcrTaskDetail:
+    row = db.execute(
+        select(OcrTask, MistakeProblem, MistakeAsset)
+        .join(MistakeProblem, MistakeProblem.id == OcrTask.mistake_id)
+        .join(MistakeAsset, MistakeAsset.id == OcrTask.asset_id)
+        .where(OcrTask.id == task_id)
+    ).one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="OCR 任务不存在")
+    task, mistake, asset = row
+    values = AdminOcrTaskResponse.model_validate(task).model_dump()
+    return AdminOcrTaskDetail(
+        **values,
+        subject=mistake.subject,
+        question_text=mistake.question_text,
+        corrected_text=mistake.corrected_text,
+        student_work=mistake.student_work,
+        question_goal=mistake.question_goal,
+        asset_mime_type=asset.mime_type,
+        asset_size_bytes=asset.size_bytes,
+    )
+
+
+@router.get("/ocr-tasks/{task_id}", response_model=AdminOcrTaskDetail)
+def get_admin_ocr_task(task_id: str, db: DbSession, _admin: SuperAdminUser) -> AdminOcrTaskDetail:
+    return _admin_ocr_detail(db, task_id)
+
+
+@router.post("/ocr-tasks/{task_id}/cancel", response_model=AdminOcrTaskDetail)
+def cancel_admin_ocr_task(task_id: str, db: DbSession, admin: SuperAdminUser) -> AdminOcrTaskDetail:
+    task = db.get(OcrTask, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="OCR 任务不存在")
+    if task.status in {"succeeded", "failed", "cancelled"}:
+        raise HTTPException(status_code=409, detail="当前任务状态不能取消")
+    task.cancel_requested = True
+    if task.status == "queued":
+        task.status = "cancelled"
+        task.completed_at = datetime.now(timezone.utc)
+    db.add(AuditLog(actor_user_id=admin.id, action="ocr.cancelled", target_type="ocr_task", target_id=task.id))
+    db.commit()
+    return _admin_ocr_detail(db, task_id)
+
+
+@router.post("/ocr-tasks/{task_id}/retry", response_model=AdminOcrTaskDetail, status_code=202)
+def retry_admin_ocr_task(task_id: str, db: DbSession, admin: SuperAdminUser) -> AdminOcrTaskDetail:
+    task = db.get(OcrTask, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="OCR 任务不存在")
+    if task.status not in {"failed", "cancelled"}:
+        raise HTTPException(status_code=409, detail="只有失败或已取消的任务可以重试")
+    task.status = "queued"
+    task.attempts = 0
+    task.cancel_requested = False
+    task.error_code = None
+    task.error_message = None
+    task.completed_at = None
+    task.queued_at = datetime.now(timezone.utc)
+    db.add(AuditLog(actor_user_id=admin.id, action="ocr.retried", target_type="ocr_task", target_id=task.id))
+    db.commit()
+    try:
+        enqueue_ocr_task(task.id)
+    except Exception as exc:
+        task.status = "failed"
+        task.error_code = "queue_unavailable"
+        task.error_message = "OCR 队列暂时不可用"
+        task.completed_at = datetime.now(timezone.utc)
+        db.commit()
+        raise HTTPException(status_code=503, detail="OCR 队列暂时不可用") from exc
+    return _admin_ocr_detail(db, task_id)
+
+
+@router.get("/mistakes", response_model=list[AdminMistakeResponse])
+def list_admin_mistakes(
+    db: DbSession,
+    _admin: SuperAdminUser,
+    review_status: str | None = None,
+    link_status: str | None = None,
+    user_id: str | None = None,
+    q: str | None = None,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> list[MistakeProblem]:
+    statement = (
+        select(MistakeProblem)
+        .options(
+            selectinload(MistakeProblem.assets),
+            selectinload(MistakeProblem.ocr_tasks),
+            selectinload(MistakeProblem.practices),
+        )
+        .order_by(MistakeProblem.updated_at.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    if review_status:
+        statement = statement.where(MistakeProblem.review_status == review_status)
+    if link_status:
+        statement = statement.where(MistakeProblem.link_status == link_status)
+    if user_id:
+        statement = statement.where(MistakeProblem.user_id == user_id)
+    if q:
+        needle = f"%{q.strip()}%"
+        statement = statement.where(
+            or_(
+                MistakeProblem.question_text.ilike(needle),
+                MistakeProblem.corrected_text.ilike(needle),
+                MistakeProblem.student_work.ilike(needle),
+            )
+        )
+    return list(db.scalars(statement))
+
+
+@router.get("/mistakes/{mistake_id}", response_model=AdminMistakeResponse)
+def get_admin_mistake(mistake_id: str, db: DbSession, _admin: SuperAdminUser) -> MistakeProblem:
+    mistake = db.scalar(
+        select(MistakeProblem)
+        .where(MistakeProblem.id == mistake_id)
+        .options(
+            selectinload(MistakeProblem.assets),
+            selectinload(MistakeProblem.ocr_tasks),
+            selectinload(MistakeProblem.practices),
+        )
+    )
+    if mistake is None:
+        raise HTTPException(status_code=404, detail="错题不存在")
+    return mistake
+
+
+@router.patch("/mistakes/{mistake_id}", response_model=AdminMistakeResponse)
+def review_admin_mistake(
+    mistake_id: str,
+    payload: AdminMistakeReview,
+    db: DbSession,
+    admin: SuperAdminUser,
+) -> MistakeProblem:
+    mistake = db.get(MistakeProblem, mistake_id)
+    if mistake is None:
+        raise HTTPException(status_code=404, detail="错题不存在")
+    values = payload.model_dump(exclude_unset=True)
+    if "knowledge_node_id" in values and values["knowledge_node_id"] is not None:
+        node = db.get(KnowledgeNode, values["knowledge_node_id"])
+        if node is None:
+            raise HTTPException(status_code=404, detail="知识点不存在")
+        values.setdefault("link_status", "confirmed")
+    for key, value in values.items():
+        setattr(mistake, key, value)
+    db.add(
+        AuditLog(
+            actor_user_id=admin.id,
+            action="mistake.reviewed",
+            target_type="mistake",
+            target_id=mistake.id,
+            details=values,
+        )
+    )
+    db.commit()
+    return get_admin_mistake(mistake.id, db, admin)

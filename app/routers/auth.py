@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 import jwt
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import delete, select, update
 
 from app.config import settings
@@ -22,6 +22,7 @@ from app.models import (
 from app.schemas import (
     AuthResponse,
     ChangePasswordRequest,
+    DeviceSessionResponse,
     LoginRequest,
     LogoutRequest,
     MessageResponse,
@@ -34,6 +35,13 @@ from app.services.mistakes import delete_assets
 
 
 router = APIRouter(prefix="/auth", tags=["账户"])
+
+
+def _session_is_active(session: RefreshSession, now: datetime) -> bool:
+    expires_at = session.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    return session.revoked_at is None and expires_at > now
 
 
 def _issue_tokens(db: DbSession, user: User, device_name: str | None) -> AuthResponse:
@@ -107,9 +115,16 @@ def refresh(payload: RefreshRequest, db: DbSession) -> AuthResponse:
         raise HTTPException(status_code=401, detail="刷新凭证无效") from exc
     session = db.scalar(select(RefreshSession).where(RefreshSession.token_jti == claims["jti"]))
     user = db.get(User, claims["sub"])
-    if session is None or session.revoked_at is not None or user is None or not user.is_active:
+    now = datetime.now(timezone.utc)
+    if (
+        session is None
+        or session.user_id != claims["sub"]
+        or not _session_is_active(session, now)
+        or user is None
+        or not user.is_active
+    ):
         raise HTTPException(status_code=401, detail="刷新凭证已失效")
-    session.revoked_at = datetime.now(timezone.utc)
+    session.revoked_at = now
     db.commit()
     return _issue_tokens(db, user, session.device_name)
 
@@ -130,6 +145,55 @@ def logout(payload: LogoutRequest, db: DbSession) -> MessageResponse:
 @router.get("/me", response_model=UserResponse)
 def me(user: CurrentUser) -> User:
     return user
+
+
+@router.get("/sessions", response_model=list[DeviceSessionResponse])
+def list_device_sessions(
+    db: DbSession,
+    user: CurrentUser,
+    include_inactive: bool = Query(default=False),
+) -> list[dict]:
+    now = datetime.now(timezone.utc)
+    statement = (
+        select(RefreshSession)
+        .where(RefreshSession.user_id == user.id)
+        .order_by(RefreshSession.created_at.desc())
+    )
+    if not include_inactive:
+        statement = statement.where(RefreshSession.revoked_at.is_(None), RefreshSession.expires_at > now)
+    return [
+        {
+            "id": session.id,
+            "device_name": session.device_name,
+            "expires_at": session.expires_at,
+            "revoked_at": session.revoked_at,
+            "created_at": session.created_at,
+            "active": _session_is_active(session, now),
+        }
+        for session in db.scalars(statement)
+    ]
+
+
+@router.delete("/sessions/{session_id}", response_model=MessageResponse)
+def revoke_device_session(session_id: str, db: DbSession, user: CurrentUser) -> MessageResponse:
+    session = db.scalar(
+        select(RefreshSession).where(RefreshSession.id == session_id, RefreshSession.user_id == user.id)
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="设备会话不存在")
+    if session.revoked_at is None:
+        session.revoked_at = datetime.now(timezone.utc)
+        db.add(
+            AuditLog(
+                actor_user_id=user.id,
+                action="auth.session_revoked",
+                target_type="refresh_session",
+                target_id=session.id,
+                details={"device_name": session.device_name},
+            )
+        )
+        db.commit()
+    return MessageResponse(message="设备会话已撤销")
 
 
 @router.post("/change-password", response_model=MessageResponse)

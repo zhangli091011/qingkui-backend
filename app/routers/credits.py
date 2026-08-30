@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select
 
-from app.deps import AdminUser, CurrentUser, DbSession
+from app.deps import CurrentUser, DbSession, SuperAdminUser
 from app.models import AuditLog, CreditAccount, CreditLedger, User
 from app.schemas import AdminCreditAdjustment, CreditAccountResponse, CreditLedgerResponse
 
@@ -39,7 +39,7 @@ def adjust_credit(
     user_id: str,
     payload: AdminCreditAdjustment,
     db: DbSession,
-    admin: AdminUser,
+    admin: SuperAdminUser,
 ) -> CreditAccount:
     if db.get(User, user_id) is None:
         raise HTTPException(status_code=404, detail="用户不存在")
