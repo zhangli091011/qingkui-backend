@@ -219,6 +219,45 @@ def materialize_launch_candidates_file(limit: int) -> None:
     )
 
 
+def content_review_packet_file(
+    output: str,
+    markdown: str | None,
+    *,
+    subject: str,
+    grade: str,
+    textbook_version: str,
+    chapter: str | None,
+    limit: int,
+) -> None:
+    from app.services.review_packets import build_content_review_packet, render_content_review_markdown
+
+    if not 1 <= limit <= 600:
+        raise SystemExit("--limit must be between 1 and 600")
+    Base.metadata.create_all(bind=engine)
+    with SessionLocal() as db:
+        packet = build_content_review_packet(
+            db,
+            subject=subject,
+            grade=grade,
+            textbook_version=textbook_version,
+            chapter=chapter,
+            limit=limit,
+        )
+    output_path = Path(output).resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(packet, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if markdown:
+        markdown_path = Path(markdown).resolve()
+        markdown_path.parent.mkdir(parents=True, exist_ok=True)
+        markdown_path.write_text(render_content_review_markdown(packet), encoding="utf-8")
+    summary = packet["summary"]
+    print(
+        f"Content review packet: nodes={summary['nodes']}, evidence={summary['nodes_with_evidence']}, "
+        f"error_suggestions={summary['common_error_suggestions']}, "
+        f"question_suggestions={summary['question_type_suggestions']}, output={output_path}"
+    )
+
+
 def import_wikibooks_content(pages_per_topic: int) -> None:
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
@@ -288,6 +327,17 @@ def main() -> None:
     governance_command.add_argument("--output")
     candidate_command = subparsers.add_parser("materialize-launch-candidates", help="create review-only nodes from launch-scope documents")
     candidate_command.add_argument("--limit", type=int, default=600, choices=range(1, 601))
+    review_packet_command = subparsers.add_parser(
+        "content-review-packet",
+        help="export traceable source evidence and suggestions for human node review",
+    )
+    review_packet_command.add_argument("--output", required=True)
+    review_packet_command.add_argument("--markdown")
+    review_packet_command.add_argument("--subject", default="数学")
+    review_packet_command.add_argument("--grade", default="高一")
+    review_packet_command.add_argument("--textbook-version", default="人教A版")
+    review_packet_command.add_argument("--chapter")
+    review_packet_command.add_argument("--limit", type=int, default=600)
     wikibooks_command = subparsers.add_parser("import-wikibooks")
     wikibooks_command.add_argument("--pages-per-topic", type=int, default=6, choices=range(1, 11))
     qa_command = subparsers.add_parser("qa-console", help="interactive streaming AI QA tester")
@@ -354,6 +404,16 @@ def main() -> None:
         content_governance_report_file(args.output)
     elif args.command == "materialize-launch-candidates":
         materialize_launch_candidates_file(args.limit)
+    elif args.command == "content-review-packet":
+        content_review_packet_file(
+            args.output,
+            args.markdown,
+            subject=args.subject,
+            grade=args.grade,
+            textbook_version=args.textbook_version,
+            chapter=args.chapter,
+            limit=args.limit,
+        )
     elif args.command == "import-wikibooks":
         import_wikibooks_content(args.pages_per_topic)
     elif args.command == "qa-console":

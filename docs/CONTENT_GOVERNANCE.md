@@ -29,3 +29,21 @@
 治理报告接口：`GET /api/admin/knowledge/governance`。它返回范围内候选节点、逐项阻断原因、文档元数据、公式审核和关系类型统计。
 
 可以运行 `python -m app.cli materialize-launch-candidates --limit 600` 从首发范围内的授权文档生成审核候选。命令按文档族去重，抽取章节、知识点和题型层级并建立关系；新节点一律为未激活草稿，且包含“待审核”标记，不能自动发布。
+
+## 批量审核包
+
+为减少审核员逐个查找原文的时间，可以生成只读审核包：
+
+```powershell
+python -m app.cli content-review-packet `
+  --subject 数学 `
+  --grade 高一 `
+  --textbook-version 人教A版 `
+  --limit 600 `
+  --output .local/math-review-packet.json `
+  --markdown .local/math-review-packet.md
+```
+
+审核包为每个草稿节点提供来源、原文分块、当前阻断原因、同文档待审公式，以及从带“易错、注意、题型、例题”等标记的原文行中提取的建议。每条建议都保留 `chunk_id` 和原文证据。
+
+该命令不修改数据库，不移除“待审核”标记，也不发布节点。建议可能不完整或与节点边界不完全一致；审核员必须对照原文确认后，通过管理后台保存定义、解释、常见错误和典型题型，再单独执行发布。禁止写脚本把审核包建议直接批量写回正式字段。
