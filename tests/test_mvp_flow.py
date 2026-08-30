@@ -123,6 +123,40 @@ def test_session_history_restore_delete_and_cross_user_isolation(client: TestCli
     assert client.get(f"/api/qa/sessions/{session_id}", headers=headers).status_code == 404
 
 
+def test_session_search_matches_title_and_message_without_cross_user_leaks(client: TestClient, account):
+    _, headers = account
+    title_match = client.post(
+        "/api/qa/sessions",
+        json={"mode": "knowledge", "title": "唯一标题检索词"},
+        headers=headers,
+    ).json()
+    message_match = client.post(
+        "/api/qa/sessions",
+        json={"mode": "knowledge", "title": "普通标题"},
+        headers=headers,
+    ).json()
+    answer = client.post(
+        f"/api/qa/sessions/{message_match['id']}/messages",
+        json={"content": "正文包含唯一消息检索词", "help_level": "approach"},
+        headers=headers,
+    )
+    assert answer.status_code == 200
+
+    by_title = client.get("/api/qa/sessions", params={"q": "唯一标题检索词"}, headers=headers)
+    by_message = client.get("/api/qa/sessions", params={"q": "唯一消息检索词"}, headers=headers)
+    assert [item["id"] for item in by_title.json()] == [title_match["id"]]
+    assert [item["id"] for item in by_message.json()] == [message_match["id"]]
+
+    other = client.post(
+        "/api/auth/register",
+        json={"username": "session_search_other", "password": "student-pass-789", "nickname": "隔离用户"},
+    ).json()
+    other_headers = {"Authorization": f"Bearer {other['access_token']}"}
+    assert client.get(
+        "/api/qa/sessions", params={"q": "唯一消息检索词"}, headers=other_headers
+    ).json() == []
+
+
 def test_concurrent_credit_charges_never_go_below_zero(client: TestClient, account):
     _, headers = account
     session = client.post("/api/qa/sessions", json={"mode": "knowledge"}, headers=headers).json()

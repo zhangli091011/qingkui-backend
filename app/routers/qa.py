@@ -104,15 +104,22 @@ def create_session(payload: ConversationCreate, db: DbSession, user: CurrentUser
 def list_sessions(
     db: DbSession,
     user: CurrentUser,
+    q: str | None = Query(default=None, min_length=1, max_length=120),
     limit: int = Query(default=30, ge=1, le=100),
 ) -> list[Conversation]:
+    statement = (
+        select(Conversation)
+        .options(selectinload(Conversation.messages))
+        .where(Conversation.user_id == user.id)
+    )
+    if q:
+        pattern = f"%{q.strip()}%"
+        statement = statement.where(
+            Conversation.title.ilike(pattern) | Conversation.messages.any(Message.content.ilike(pattern))
+        )
     return list(
         db.scalars(
-            select(Conversation)
-            .options(selectinload(Conversation.messages))
-            .where(Conversation.user_id == user.id)
-            .order_by(Conversation.updated_at.desc())
-            .limit(limit)
+            statement.order_by(Conversation.updated_at.desc()).limit(limit)
         )
     )
 
