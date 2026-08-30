@@ -51,11 +51,20 @@ from app.schemas import (
     KnowledgeReviewQueueResponse,
     AuditLogResponse,
     ModelCostResponse,
+    PilotCleanupCandidate,
+    PilotCleanupExecute,
+    PilotCleanupPreview,
+    PilotCleanupRequest,
+    PilotCleanupResult,
+    PilotExportResponse,
+    PilotMetricsResponse,
     KnowledgeSourceCreate,
     SourceResponse,
 )
 from app.services.content_governance import node_publication_blockers, governance_report
-from app.services.mistakes import enqueue_ocr_task
+from app.services.mistakes import delete_assets, enqueue_ocr_task
+from app.services.pilot import anonymous_user_id, build_pilot_report
+from app.services.user_lifecycle import erase_user_account
 
 
 router = APIRouter(prefix="/admin", tags=["管理后台"])
@@ -665,6 +674,144 @@ def model_costs(
         }
         for row_provider, row_model, calls, successful, failed, input_tokens, output_tokens, average_latency in rows
     ]
+
+
+@router.get("/pilot/metrics", response_model=PilotMetricsResponse)
+def pilot_metrics(
+    db: DbSession,
+    _admin: SuperAdminUser,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
+) -> dict:
+    metrics, _ = build_pilot_report(db, start_at=start_at, end_at=end_at)
+    return metrics
+
+
+@router.get("/pilot/export", response_model=PilotExportResponse)
+def export_pilot_data(
+    db: DbSession,
+    _admin: SuperAdminUser,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
+) -> dict:
+    metrics, users = build_pilot_report(db, start_at=start_at, end_at=end_at)
+    return {
+        "generated_at": datetime.now(timezone.utc),
+        "metrics": metrics,
+        "users": users,
+        "privacy_note": "仅包含不可逆匿名 ID、时间和聚合计数；不包含账户标识、题目、回答、笔记或反馈正文。",
+    }
+
+
+def _pilot_cleanup_preview(
+    db: DbSession,
+    user_ids: list[str],
+    actor: User,
+) -> PilotCleanupPreview:
+    users = {
+        user.id: user
+        for user in db.scalars(select(User).where(User.id.in_(user_ids)))
+    }
+    asset_counts = {
+        user_id: int(count)
+        for user_id, count in db.execute(
+            select(MistakeAsset.user_id, func.count(MistakeAsset.id))
+            .where(MistakeAsset.user_id.in_(user_ids))
+            .group_by(MistakeAsset.user_id)
+        )
+    }
+    candidates: list[PilotCleanupCandidate] = []
+    for user_id in user_ids:
+        user = users.get(user_id)
+        reason = None
+        if user is None:
+            reason = "用户不存在"
+        elif user.id == actor.id:
+            reason = "不能清理当前管理员账户"
+        elif user.role != UserRole.student:
+            reason = "只能清理学生账户"
+        elif user.deleted_at is not None:
+            reason = "账户已经注销"
+        candidates.append(
+            PilotCleanupCandidate(
+                user_id=user_id,
+                anonymous_id=anonymous_user_id(user_id),
+                eligible=reason is None,
+                reason=reason,
+                asset_count=asset_counts.get(user_id, 0),
+            )
+        )
+    eligible_count = sum(candidate.eligible for candidate in candidates)
+    return PilotCleanupPreview(
+        requested_count=len(user_ids),
+        eligible_count=eligible_count,
+        blocked_count=len(user_ids) - eligible_count,
+        candidates=candidates,
+    )
+
+
+@router.post("/pilot/cleanup/preview", response_model=PilotCleanupPreview)
+def preview_pilot_cleanup(
+    payload: PilotCleanupRequest,
+    db: DbSession,
+    admin: SuperAdminUser,
+) -> PilotCleanupPreview:
+    return _pilot_cleanup_preview(db, payload.user_ids, admin)
+
+
+@router.post("/pilot/cleanup", response_model=PilotCleanupResult)
+def cleanup_pilot_accounts(
+    payload: PilotCleanupExecute,
+    db: DbSession,
+    admin: SuperAdminUser,
+) -> PilotCleanupResult:
+    if payload.confirmation != "DELETE_PILOT_DATA":
+        raise HTTPException(status_code=409, detail="确认短语不正确")
+    preview = _pilot_cleanup_preview(db, payload.user_ids, admin)
+    if preview.blocked_count:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "清理目标中包含不可操作账户",
+                "blocked": [
+                    {"anonymous_id": item.anonymous_id, "reason": item.reason}
+                    for item in preview.candidates
+                    if not item.eligible
+                ],
+            },
+        )
+    if payload.expected_count != preview.eligible_count:
+        raise HTTPException(status_code=409, detail="预期数量与当前可清理数量不一致，请重新预览")
+    targets = list(db.scalars(select(User).where(User.id.in_(payload.user_ids)).with_for_update()))
+    assets = list(db.scalars(select(MistakeAsset).where(MistakeAsset.user_id.in_(payload.user_ids))))
+    try:
+        delete_assets(assets)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail="个人图片存储暂时不可用，未执行账户清理") from exc
+    anonymous_ids: list[str] = []
+    for target in targets:
+        anonymous_id = anonymous_user_id(target.id)
+        erase_user_account(db, target, delete_external_assets=False)
+        db.add(
+            AuditLog(
+                actor_user_id=admin.id,
+                action="pilot.user_cleaned",
+                target_type="user",
+                target_id=target.id,
+                details={"anonymous_id": anonymous_id},
+            )
+        )
+        anonymous_ids.append(anonymous_id)
+    db.add(
+        AuditLog(
+            actor_user_id=admin.id,
+            action="pilot.batch_cleaned",
+            target_type="pilot",
+            details={"deleted_count": len(targets), "anonymous_ids": sorted(anonymous_ids)},
+        )
+    )
+    db.commit()
+    return PilotCleanupResult(deleted_count=len(targets), anonymous_ids=sorted(anonymous_ids))
 
 
 @router.get("/users", response_model=list[AdminUserResponse])

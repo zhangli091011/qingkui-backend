@@ -168,7 +168,7 @@ def test_queue_failure_is_retryable_and_delete_failure_preserves_record(
 def test_account_deletion_with_mistake_data_respects_username_limit(client: TestClient, monkeypatch):
     headers = _second_account(client)
     _create(client, headers)
-    monkeypatch.setattr("app.routers.auth.delete_assets", lambda _assets: None)
+    monkeypatch.setattr("app.services.user_lifecycle.delete_assets", lambda _assets: None)
     deletion = client.delete("/api/auth/me", headers=headers)
     assert deletion.status_code == 200, deletion.text
     assert client.get("/api/auth/me", headers=headers).status_code == 401

@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.models import EdgeType, HelpLevel, KnowledgeStatus, QaMode, UserRole
 
@@ -395,6 +395,86 @@ class AdminUserStatusUpdate(BaseModel):
 
 class AdminUserRoleUpdate(BaseModel):
     role: UserRole
+
+
+class PilotMetricsResponse(BaseModel):
+    start_at: datetime
+    end_at: datetime
+    registered_users: int
+    activated_users: int
+    activation_rate: float
+    retention_7d_eligible_users: int
+    retained_7d_users: int
+    retention_7d_rate: float
+    helpful_votes: int
+    unhelpful_votes: int
+    answer_helpfulness_rate: float | None
+    graph_explorers: int
+    graph_exploration_rate: float
+    knowledge_state_changes: int
+    credits_spent: int
+    average_credits_per_active_user: float
+
+
+class PilotUserExport(BaseModel):
+    anonymous_id: str
+    registered_at: datetime
+    activated: bool
+    last_activity_at: datetime | None
+    conversation_count: int
+    assistant_message_count: int
+    graph_exploration_count: int
+    knowledge_state_change_count: int
+    verified_node_count: int
+    credits_spent: int
+    helpful_votes: int
+    unhelpful_votes: int
+    mistake_count: int
+    completed_practice_count: int
+
+
+class PilotExportResponse(BaseModel):
+    generated_at: datetime
+    metrics: PilotMetricsResponse
+    users: list[PilotUserExport]
+    privacy_note: str
+
+
+class PilotCleanupRequest(BaseModel):
+    user_ids: list[str] = Field(min_length=1, max_length=100)
+
+    @field_validator("user_ids")
+    @classmethod
+    def unique_user_ids(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() for item in value if item.strip()]
+        if len(normalized) != len(value) or len(set(normalized)) != len(normalized):
+            raise ValueError("用户 ID 不能为空或重复")
+        return normalized
+
+
+class PilotCleanupExecute(PilotCleanupRequest):
+    confirmation: str
+    expected_count: int = Field(ge=1, le=100)
+
+
+class PilotCleanupCandidate(BaseModel):
+    user_id: str
+    anonymous_id: str
+    eligible: bool
+    reason: str | None
+    asset_count: int
+
+
+class PilotCleanupPreview(BaseModel):
+    requested_count: int
+    eligible_count: int
+    blocked_count: int
+    candidates: list[PilotCleanupCandidate]
+
+
+class PilotCleanupResult(BaseModel):
+    deleted_count: int
+    anonymous_ids: list[str]
 
 
 class AdminOcrTaskResponse(OcrTaskResponse):
