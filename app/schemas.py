@@ -688,6 +688,75 @@ class KnowledgeSourceCreate(BaseModel):
     authorization_status: str = Field(pattern=r"^(authorized|self_owned|public_domain|internal_demo)$")
 
 
+class KnowledgeSourceUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=2, max_length=255)
+    publisher: str | None = Field(default=None, max_length=120)
+    edition: str | None = Field(default=None, max_length=80)
+    location: str | None = Field(default=None, min_length=2, max_length=255)
+    authorization_status: str | None = Field(
+        default=None,
+        pattern=r"^(authorized|self_owned|public_domain|internal_demo)$",
+    )
+
+
+class AdminKnowledgeDocumentResponse(ApiModel):
+    id: str
+    title: str
+    subject: str | None
+    grade: str | None
+    textbook_version: str | None
+    chapter: str | None
+    document_role: str | None
+    source_type: str
+    source_uri: str
+    authorization_status: str
+    checksum_sha256: str
+    mime_type: str | None
+    status: str
+    error_message: str | None
+    document_metadata: dict
+    chunk_count: int
+    formula_count: int
+    pending_formula_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class AdminKnowledgeDocumentListResponse(BaseModel):
+    total: int
+    offset: int
+    limit: int
+    items: list[AdminKnowledgeDocumentResponse]
+
+
+class AdminKnowledgeDocumentUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=2, max_length=255)
+    subject: str | None = Field(default=None, min_length=1, max_length=40)
+    grade: str | None = Field(default=None, min_length=1, max_length=40)
+    textbook_version: str | None = Field(default=None, min_length=1, max_length=80)
+    chapter: str | None = Field(default=None, min_length=1, max_length=120)
+    document_role: str | None = Field(default=None, min_length=1, max_length=40)
+    authorization_status: str | None = Field(
+        default=None,
+        pattern=r"^(authorized|self_owned|public_domain|pending_review)$",
+    )
+    status: str | None = Field(
+        default=None,
+        pattern=r"^(processing|text_ready|failed|archived)$",
+    )
+
+
+class KnowledgeGraphIntegrityReport(BaseModel):
+    node_count: int
+    edge_count: int
+    orphaned_node_ids: list[str]
+    inactive_edge_ids: list[str]
+    cross_subject_edge_ids: list[str]
+    self_referential_edge_ids: list[str]
+    duplicate_node_groups: list[list[str]]
+    prerequisite_cycles: list[list[str]]
+
+
 class KnowledgeNodeCreate(BaseModel):
     id: str = Field(min_length=2, max_length=64, pattern=r"^[a-z0-9_\-]+$")
     name: str = Field(min_length=1, max_length=120)
@@ -848,6 +917,22 @@ class ModelCostResponse(BaseModel):
     failed_calls: int = 0
     failure_rate: float = 0
     average_latency_ms: float = 0
+
+
+class OperationalAlert(BaseModel):
+    severity: str
+    code: str
+    message: str
+    value: float
+    threshold: float
+
+
+class OperationalAlertSummary(BaseModel):
+    status: str
+    generated_at: datetime
+    window_start: datetime
+    metrics: dict[str, float | int]
+    alerts: list[OperationalAlert]
 
 
 class AdminCreditAdjustment(BaseModel):

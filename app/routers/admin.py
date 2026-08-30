@@ -1,10 +1,11 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload, selectinload
 
+from app.config import settings
 from app.deps import AdminUser, DbSession, SuperAdminUser
 from app.models import (
     AuditLog,
@@ -26,6 +27,9 @@ from app.models import (
     UserRole,
 )
 from app.schemas import (
+    AdminKnowledgeDocumentListResponse,
+    AdminKnowledgeDocumentResponse,
+    AdminKnowledgeDocumentUpdate,
     AdminFeedbackResponse,
     AdminMistakeResponse,
     AdminMistakeReview,
@@ -44,6 +48,7 @@ from app.schemas import (
     KnowledgeNodeRestore,
     KnowledgeNodeUpdate,
     KnowledgeNodeVersionResponse,
+    KnowledgeGraphIntegrityReport,
     ContentGovernanceReport,
     FormulaReviewItem,
     FormulaReviewQueueResponse,
@@ -51,6 +56,7 @@ from app.schemas import (
     KnowledgeReviewQueueResponse,
     AuditLogResponse,
     ModelCostResponse,
+    OperationalAlertSummary,
     PilotCleanupCandidate,
     PilotCleanupExecute,
     PilotCleanupPreview,
@@ -59,9 +65,10 @@ from app.schemas import (
     PilotExportResponse,
     PilotMetricsResponse,
     KnowledgeSourceCreate,
+    KnowledgeSourceUpdate,
     SourceResponse,
 )
-from app.services.content_governance import node_publication_blockers, governance_report
+from app.services.content_governance import graph_integrity_report, governance_report, node_publication_blockers
 from app.services.mistakes import delete_assets, enqueue_ocr_task
 from app.services.pilot import anonymous_user_id, build_pilot_report
 from app.services.user_lifecycle import erase_user_account
@@ -140,6 +147,15 @@ def list_chapters(db: DbSession, _admin: AdminUser, subject: str | None = None) 
     if subject:
         statement = statement.where(KnowledgeNode.subject == subject)
     return list(db.scalars(statement))
+
+
+@router.get("/knowledge/integrity", response_model=KnowledgeGraphIntegrityReport)
+def get_graph_integrity_report(
+    db: DbSession,
+    _admin: AdminUser,
+    subject: str | None = None,
+) -> dict:
+    return graph_integrity_report(db, subject=subject)
 
 
 @router.get("/knowledge/governance", response_model=ContentGovernanceReport)
@@ -328,6 +344,217 @@ def create_source(payload: KnowledgeSourceCreate, db: DbSession, admin: AdminUse
     db.commit()
     db.refresh(source)
     return source
+
+
+@router.get("/knowledge/sources", response_model=list[SourceResponse])
+def list_sources(
+    db: DbSession,
+    _admin: AdminUser,
+    q: str | None = None,
+    authorization_status: str | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+) -> list[KnowledgeSource]:
+    statement = select(KnowledgeSource).order_by(KnowledgeSource.title, KnowledgeSource.id).limit(limit)
+    if q:
+        keyword = f"%{q.strip()}%"
+        statement = statement.where(
+            or_(
+                KnowledgeSource.title.ilike(keyword),
+                KnowledgeSource.publisher.ilike(keyword),
+                KnowledgeSource.location.ilike(keyword),
+            )
+        )
+    if authorization_status:
+        statement = statement.where(KnowledgeSource.authorization_status == authorization_status)
+    return list(db.scalars(statement))
+
+
+@router.patch("/knowledge/sources/{source_id}", response_model=SourceResponse)
+def update_source(
+    source_id: str,
+    payload: KnowledgeSourceUpdate,
+    db: DbSession,
+    admin: AdminUser,
+) -> KnowledgeSource:
+    source = db.get(KnowledgeSource, source_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="内容来源不存在")
+    changes = payload.model_dump(exclude_unset=True)
+    if not changes:
+        return source
+    if any(changes.get(field) is None for field in ("title", "location", "authorization_status") if field in changes):
+        raise HTTPException(status_code=422, detail="来源标题、定位和授权状态不能清空")
+    for key, value in changes.items():
+        setattr(source, key, value)
+    db.add(
+        AuditLog(
+            actor_user_id=admin.id,
+            action="knowledge_source.updated",
+            target_type="knowledge_source",
+            target_id=source.id,
+            details={"fields": sorted(changes)},
+        )
+    )
+    db.commit()
+    db.refresh(source)
+    return source
+
+
+def _document_item(document: KnowledgeDocument, counts: tuple[int, int, int]) -> dict:
+    chunk_count, formula_count, pending_formula_count = counts
+    return {
+        "id": document.id,
+        "title": document.title,
+        "subject": document.subject,
+        "grade": document.grade,
+        "textbook_version": document.textbook_version,
+        "chapter": document.chapter,
+        "document_role": document.document_role,
+        "source_type": document.source_type,
+        "source_uri": document.source_uri,
+        "authorization_status": document.authorization_status,
+        "checksum_sha256": document.checksum_sha256,
+        "mime_type": document.mime_type,
+        "status": document.status,
+        "error_message": document.error_message,
+        "document_metadata": document.document_metadata or {},
+        "chunk_count": chunk_count,
+        "formula_count": formula_count,
+        "pending_formula_count": pending_formula_count,
+        "created_at": document.created_at,
+        "updated_at": document.updated_at,
+    }
+
+
+def _document_counts(db, document_ids: list[str]) -> dict[str, tuple[int, int, int]]:
+    if not document_ids:
+        return {}
+    rows = db.execute(
+        select(
+            KnowledgeChunk.document_id,
+            func.count(KnowledgeChunk.id),
+            func.sum(case((KnowledgeChunk.content_type == "formula", 1), else_=0)),
+            func.sum(
+                case(
+                    (
+                        (KnowledgeChunk.content_type == "formula")
+                        & (KnowledgeChunk.formula_review_status == "pending"),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ),
+        )
+        .where(KnowledgeChunk.document_id.in_(document_ids))
+        .group_by(KnowledgeChunk.document_id)
+    )
+    return {
+        document_id: (int(chunks or 0), int(formulas or 0), int(pending or 0))
+        for document_id, chunks, formulas, pending in rows
+    }
+
+
+@router.get("/knowledge/documents", response_model=AdminKnowledgeDocumentListResponse)
+def list_documents(
+    db: DbSession,
+    _admin: AdminUser,
+    q: str | None = None,
+    subject: str | None = None,
+    grade: str | None = None,
+    textbook_version: str | None = None,
+    chapter: str | None = None,
+    document_role: str | None = None,
+    document_status: str | None = None,
+    authorization_status: str | None = None,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=100),
+) -> dict:
+    filters = []
+    if q:
+        keyword = f"%{q.strip()}%"
+        filters.append(or_(KnowledgeDocument.title.ilike(keyword), KnowledgeDocument.source_uri.ilike(keyword)))
+    for column, value in (
+        (KnowledgeDocument.subject, subject),
+        (KnowledgeDocument.grade, grade),
+        (KnowledgeDocument.textbook_version, textbook_version),
+        (KnowledgeDocument.chapter, chapter),
+        (KnowledgeDocument.document_role, document_role),
+        (KnowledgeDocument.status, document_status),
+        (KnowledgeDocument.authorization_status, authorization_status),
+    ):
+        if value:
+            filters.append(column == value)
+    total = db.scalar(select(func.count(KnowledgeDocument.id)).where(*filters)) or 0
+    documents = list(
+        db.scalars(
+            select(KnowledgeDocument)
+            .where(*filters)
+            .order_by(KnowledgeDocument.updated_at.desc(), KnowledgeDocument.id)
+            .offset(offset)
+            .limit(limit)
+        )
+    )
+    counts = _document_counts(db, [document.id for document in documents])
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "items": [
+            _document_item(document, counts.get(document.id, (0, 0, 0)))
+            for document in documents
+        ],
+    }
+
+
+@router.get("/knowledge/documents/{document_id}", response_model=AdminKnowledgeDocumentResponse)
+def get_document(document_id: str, db: DbSession, _admin: AdminUser) -> dict:
+    document = db.get(KnowledgeDocument, document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="知识文档不存在")
+    counts = _document_counts(db, [document.id])
+    return _document_item(document, counts.get(document.id, (0, 0, 0)))
+
+
+@router.patch("/knowledge/documents/{document_id}", response_model=AdminKnowledgeDocumentResponse)
+def update_document(
+    document_id: str,
+    payload: AdminKnowledgeDocumentUpdate,
+    db: DbSession,
+    admin: AdminUser,
+) -> dict:
+    document = db.get(KnowledgeDocument, document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="知识文档不存在")
+    changes = payload.model_dump(exclude_unset=True)
+    if any(changes.get(field) is None for field in ("title", "authorization_status", "status") if field in changes):
+        raise HTTPException(status_code=422, detail="文档标题、授权状态和状态不能清空")
+    metadata_fields = {"subject", "grade", "textbook_version", "chapter", "document_role"}
+    requires_reindex = bool(metadata_fields.intersection(changes)) and document.status == "indexed"
+    for key, value in changes.items():
+        setattr(document, key, value)
+    if requires_reindex and "status" not in changes:
+        document.status = "text_ready"
+    metadata = dict(document.document_metadata or {})
+    for key in metadata_fields.intersection(changes):
+        metadata[key] = changes[key]
+    document.document_metadata = metadata
+    db.add(
+        AuditLog(
+            actor_user_id=admin.id,
+            action="knowledge_document.updated",
+            target_type="knowledge_document",
+            target_id=document.id,
+            details={
+                "fields": sorted(changes),
+                "requires_reindex": requires_reindex,
+                "result_status": document.status,
+            },
+        )
+    )
+    db.commit()
+    db.refresh(document)
+    counts = _document_counts(db, [document.id])
+    return _document_item(document, counts.get(document.id, (0, 0, 0)))
 
 
 @router.post("/knowledge/nodes", response_model=KnowledgeNodeDetail, status_code=201)
@@ -674,6 +901,106 @@ def model_costs(
         }
         for row_provider, row_model, calls, successful, failed, input_tokens, output_tokens, average_latency in rows
     ]
+
+
+@router.get("/operational-alerts", response_model=OperationalAlertSummary)
+def operational_alerts(db: DbSession, _admin: AdminUser) -> dict:
+    now = datetime.now(timezone.utc)
+    window_start = now - timedelta(minutes=max(1, settings.operational_alert_window_minutes))
+    calls, failed_calls, average_latency = db.execute(
+        select(
+            func.count(ModelCall.id),
+            func.sum(case((ModelCall.success.is_(False), 1), else_=0)),
+            func.avg(ModelCall.latency_ms),
+        ).where(ModelCall.created_at >= window_start)
+    ).one()
+    calls = int(calls or 0)
+    failed_calls = int(failed_calls or 0)
+    average_latency = float(average_latency or 0)
+    failure_rate = failed_calls / calls if calls else 0.0
+
+    stuck_before = now - timedelta(minutes=max(1, settings.operational_ocr_stuck_minutes))
+    stuck_ocr = db.scalar(
+        select(func.count(OcrTask.id)).where(
+            OcrTask.status.in_(("queued", "recognizing")),
+            func.coalesce(OcrTask.started_at, OcrTask.queued_at, OcrTask.created_at) <= stuck_before,
+        )
+    ) or 0
+    failed_ocr = db.scalar(
+        select(func.count(OcrTask.id)).where(
+            OcrTask.status == "failed",
+            OcrTask.updated_at >= window_start,
+        )
+    ) or 0
+    active_ocr = db.scalar(
+        select(func.count(OcrTask.id)).where(OcrTask.status.in_(("queued", "recognizing")))
+    ) or 0
+
+    alerts: list[dict] = []
+    if (
+        calls >= settings.operational_model_failure_min_calls
+        and failed_calls > 0
+        and failure_rate >= settings.operational_model_failure_rate_threshold
+    ):
+        alerts.append(
+            {
+                "severity": "critical",
+                "code": "model_failure_rate",
+                "message": "最近模型调用失败率超过阈值",
+                "value": round(failure_rate, 4),
+                "threshold": settings.operational_model_failure_rate_threshold,
+            }
+        )
+    if calls and average_latency >= settings.operational_model_latency_threshold_ms:
+        alerts.append(
+            {
+                "severity": "warning",
+                "code": "model_latency",
+                "message": "最近模型调用平均延迟超过阈值",
+                "value": round(average_latency, 2),
+                "threshold": float(settings.operational_model_latency_threshold_ms),
+            }
+        )
+    if failed_ocr >= settings.operational_ocr_failed_threshold:
+        alerts.append(
+            {
+                "severity": "warning",
+                "code": "ocr_failures",
+                "message": "最近 OCR 失败任务数量超过阈值",
+                "value": float(failed_ocr),
+                "threshold": float(settings.operational_ocr_failed_threshold),
+            }
+        )
+    if stuck_ocr:
+        alerts.append(
+            {
+                "severity": "critical",
+                "code": "ocr_stuck",
+                "message": "存在长时间未完成的 OCR 任务",
+                "value": float(stuck_ocr),
+                "threshold": 0.0,
+            }
+        )
+    status = (
+        "critical"
+        if any(item["severity"] == "critical" for item in alerts)
+        else "warning" if alerts else "ok"
+    )
+    return {
+        "status": status,
+        "generated_at": now,
+        "window_start": window_start,
+        "metrics": {
+            "model_calls": calls,
+            "model_failed_calls": failed_calls,
+            "model_failure_rate": round(failure_rate, 4),
+            "model_average_latency_ms": round(average_latency, 2),
+            "ocr_active_tasks": int(active_ocr),
+            "ocr_failed_tasks": int(failed_ocr),
+            "ocr_stuck_tasks": int(stuck_ocr),
+        },
+        "alerts": alerts,
+    }
 
 
 @router.get("/pilot/metrics", response_model=PilotMetricsResponse)

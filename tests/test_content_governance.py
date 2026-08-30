@@ -211,13 +211,170 @@ def test_formula_review_queue_and_audit_log(client) -> None:
         assert audit.details["formula_updated"] is True
 
 
+def test_source_document_management_and_graph_integrity(client) -> None:
+    headers = _admin_headers(client)
+    source = client.post(
+        "/api/admin/knowledge/sources",
+        headers=headers,
+        json={
+            "title": "图谱治理自有来源",
+            "publisher": "青葵计划",
+            "location": "第一章",
+            "authorization_status": "self_owned",
+        },
+    )
+    assert source.status_code == 201
+    source_id = source.json()["id"]
+    sources = client.get(
+        "/api/admin/knowledge/sources",
+        headers=headers,
+        params={"q": "图谱治理"},
+    )
+    assert sources.status_code == 200
+    assert [item["id"] for item in sources.json()] == [source_id]
+    updated_source = client.patch(
+        f"/api/admin/knowledge/sources/{source_id}",
+        headers=headers,
+        json={"edition": "2026 审核版"},
+    )
+    assert updated_source.status_code == 200
+    assert updated_source.json()["edition"] == "2026 审核版"
+
+    document_id = str(uuid.uuid4())
+    with SessionLocal() as db:
+        db.add(
+            KnowledgeDocument(
+                id=document_id,
+                title="文档管理测试讲义",
+                subject="数学",
+                grade="高一",
+                textbook_version="人教A版",
+                chapter="旧章节",
+                document_role="notes",
+                source_type="local_file",
+                source_uri=f"oss://test/{document_id}.md",
+                authorization_status="self_owned",
+                checksum_sha256=uuid.uuid4().hex + uuid.uuid4().hex,
+                status="indexed",
+                document_metadata={"chapter": "旧章节"},
+            )
+        )
+        db.add_all(
+            [
+                KnowledgeChunk(
+                    document_id=document_id,
+                    sequence=0,
+                    content="集合的基本概念",
+                    content_type="text",
+                    char_start=0,
+                    char_end=7,
+                ),
+                KnowledgeChunk(
+                    document_id=document_id,
+                    sequence=1,
+                    content=r"A\subseteq B",
+                    content_type="formula",
+                    formula_latex=r"A\subseteq B",
+                    formula_source="ocr",
+                    formula_review_status="pending",
+                    char_start=8,
+                    char_end=20,
+                ),
+            ]
+        )
+        db.commit()
+
+    documents = client.get(
+        "/api/admin/knowledge/documents",
+        headers=headers,
+        params={"q": "文档管理测试", "subject": "数学"},
+    )
+    assert documents.status_code == 200
+    listed = documents.json()["items"]
+    assert len(listed) == 1
+    assert listed[0]["chunk_count"] == 2
+    assert listed[0]["formula_count"] == 1
+    assert listed[0]["pending_formula_count"] == 1
+
+    updated_document = client.patch(
+        f"/api/admin/knowledge/documents/{document_id}",
+        headers=headers,
+        json={"chapter": "第一章 集合", "document_role": "teacher_guide"},
+    )
+    assert updated_document.status_code == 200
+    assert updated_document.json()["chapter"] == "第一章 集合"
+    assert updated_document.json()["status"] == "text_ready"
+    assert updated_document.json()["document_metadata"]["document_role"] == "teacher_guide"
+
+    node_ids = ["integrity_duplicate_a", "integrity_duplicate_b", "integrity_orphan"]
+    for node_id in node_ids:
+        created = client.post(
+            "/api/admin/knowledge/nodes",
+            headers=headers,
+            json=_node_payload(node_id, source_id, "重复概念" if "duplicate" in node_id else "孤立概念"),
+        )
+        assert created.status_code == 201
+    forward = client.post(
+        "/api/admin/knowledge/edges",
+        headers=headers,
+        json={
+            "source_node_id": node_ids[0],
+            "target_node_id": node_ids[1],
+            "edge_type": "prerequisite",
+            "explanation": "完整性测试前向关系",
+        },
+    )
+    reverse = client.post(
+        "/api/admin/knowledge/edges",
+        headers=headers,
+        json={
+            "source_node_id": node_ids[1],
+            "target_node_id": node_ids[0],
+            "edge_type": "prerequisite",
+            "explanation": "完整性测试反向关系",
+        },
+    )
+    assert forward.status_code == reverse.status_code == 201
+    integrity = client.get(
+        "/api/admin/knowledge/integrity",
+        headers=headers,
+        params={"subject": "数学"},
+    )
+    assert integrity.status_code == 200
+    report = integrity.json()
+    assert node_ids[2] in report["orphaned_node_ids"]
+    assert node_ids[:2] in report["duplicate_node_groups"]
+    assert [node_ids[0], node_ids[1], node_ids[0]] in report["prerequisite_cycles"]
+
+    deleted = client.delete(
+        f"/api/admin/knowledge/edges/{reverse.json()['id']}",
+        headers=headers,
+    )
+    assert deleted.status_code == 204
+    with SessionLocal() as db:
+        audit = db.scalar(
+            select(AuditLog).where(
+                AuditLog.action == "knowledge_document.updated",
+                AuditLog.target_id == document_id,
+            )
+        )
+        assert audit is not None
+        assert audit.details["requires_reindex"] is True
+
+
 def test_admin_page_exposes_review_workspaces(client) -> None:
     response = client.get("/admin")
 
     assert response.status_code == 200
     assert "知识候选审核队列" in response.text
     assert "公式审核队列" in response.text
+    assert "来源与文档" in response.text
+    assert "图谱完整性" in response.text
     assert "用户与权限" in response.text
     assert "OCR 任务审核" in response.text
     assert "错题内容审核" in response.text
+    assert "投稿审核" in response.text
+    assert "学校、班级与邀请码" in response.text
+    assert "活动额度" in response.text
+    assert "运行告警" in response.text
     assert "innerHTML" not in response.text

@@ -66,6 +66,19 @@ def test_model_calls_capture_success_failure_tokens_and_admin_aggregation(client
     assert row["failure_rate"] == 0.5
     assert row["average_latency_ms"] >= 0
 
+    monkeypatch.setattr(settings, "operational_model_failure_min_calls", 1)
+    monkeypatch.setattr(settings, "operational_model_failure_rate_threshold", 0.0)
+    monkeypatch.setattr(settings, "operational_model_latency_threshold_ms", 0)
+    alerts = client.get("/api/admin/operational-alerts", headers=headers)
+    assert alerts.status_code == 200
+    alert_payload = alerts.json()
+    assert alert_payload["status"] == "critical"
+    assert alert_payload["metrics"]["model_calls"] >= 2
+    assert {item["code"] for item in alert_payload["alerts"]} >= {
+        "model_failure_rate",
+        "model_latency",
+    }
+
 
 def test_rate_limit_policy_and_429_response(client: TestClient, monkeypatch) -> None:
     assert _limit_for("POST", "/api/auth/login") == settings.rate_limit_auth_per_minute

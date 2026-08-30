@@ -70,6 +70,12 @@ class Settings(BaseSettings):
     rate_limit_ai_per_minute: int = 30
     rate_limit_upload_per_minute: int = 20
     rate_limit_trust_proxy_headers: bool = False
+    operational_alert_window_minutes: int = 15
+    operational_model_failure_min_calls: int = 5
+    operational_model_failure_rate_threshold: float = 0.2
+    operational_model_latency_threshold_ms: int = 30_000
+    operational_ocr_failed_threshold: int = 3
+    operational_ocr_stuck_minutes: int = 10
     ocr_queue_provider: Literal["local", "redis"] = "local"
     ocr_queue_name: str = "qingkui-ocr"
     ocr_max_attempts: int = 3

@@ -4,7 +4,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import KnowledgeChunk, KnowledgeDocument, KnowledgeEdge, KnowledgeNode, KnowledgeSource
+from app.models import EdgeType, KnowledgeChunk, KnowledgeDocument, KnowledgeEdge, KnowledgeNode, KnowledgeSource
 
 
 PUBLISHABLE_AUTHORIZATION = {"authorized", "self_owned", "public_domain"}
@@ -135,4 +135,107 @@ def governance_report(
         "relations": relation_counts,
         "blocker_counts": dict(blocker_counts.most_common()),
         "candidates": candidates,
+    }
+
+
+def graph_integrity_report(db: Session, *, subject: str | None = None) -> dict:
+    """Return deterministic graph problems that require content-admin review."""
+    all_nodes = list(db.scalars(select(KnowledgeNode).order_by(KnowledgeNode.id)))
+    node_by_id = {node.id: node for node in all_nodes}
+    scoped_nodes = [node for node in all_nodes if subject is None or node.subject == subject]
+    scoped_ids = {node.id for node in scoped_nodes}
+    edges = list(db.scalars(select(KnowledgeEdge).order_by(KnowledgeEdge.id)))
+    scoped_edges = [
+        edge
+        for edge in edges
+        if subject is None or edge.source_node_id in scoped_ids or edge.target_node_id in scoped_ids
+    ]
+
+    connected_ids = {
+        node_id
+        for edge in scoped_edges
+        for node_id in (edge.source_node_id, edge.target_node_id)
+    }
+    orphaned = sorted(node.id for node in scoped_nodes if node.id not in connected_ids)
+    inactive_edges = sorted(
+        edge.id
+        for edge in scoped_edges
+        if (
+            node_by_id.get(edge.source_node_id) is None
+            or node_by_id.get(edge.target_node_id) is None
+            or not node_by_id[edge.source_node_id].is_active
+            or not node_by_id[edge.target_node_id].is_active
+        )
+    )
+    cross_subject = sorted(
+        edge.id
+        for edge in scoped_edges
+        if (
+            node_by_id.get(edge.source_node_id) is not None
+            and node_by_id.get(edge.target_node_id) is not None
+            and node_by_id[edge.source_node_id].subject != node_by_id[edge.target_node_id].subject
+        )
+    )
+    self_referential = sorted(
+        edge.id for edge in scoped_edges if edge.source_node_id == edge.target_node_id
+    )
+
+    identities: dict[tuple[str, str, str, str, str], list[str]] = {}
+    for node in scoped_nodes:
+        identity = (
+            node.subject,
+            node.grade,
+            node.textbook_version,
+            node.chapter,
+            node.name.strip().casefold(),
+        )
+        identities.setdefault(identity, []).append(node.id)
+    duplicate_groups = sorted(
+        (sorted(node_ids) for node_ids in identities.values() if len(node_ids) > 1),
+        key=lambda group: group[0],
+    )
+
+    adjacency = {node.id: [] for node in scoped_nodes}
+    for edge in scoped_edges:
+        edge_type = edge.edge_type.value if hasattr(edge.edge_type, "value") else str(edge.edge_type)
+        if (
+            edge_type == EdgeType.prerequisite.value
+            and edge.source_node_id in scoped_ids
+            and edge.target_node_id in scoped_ids
+        ):
+            adjacency[edge.source_node_id].append(edge.target_node_id)
+    for targets in adjacency.values():
+        targets.sort()
+
+    state = {node_id: 0 for node_id in scoped_ids}
+    stack: list[str] = []
+    cycles: set[tuple[str, ...]] = set()
+
+    def visit(node_id: str) -> None:
+        state[node_id] = 1
+        stack.append(node_id)
+        for target_id in adjacency[node_id]:
+            if state[target_id] == 0:
+                visit(target_id)
+            elif state[target_id] == 1:
+                start = stack.index(target_id)
+                cycle = stack[start:]
+                rotations = [tuple(cycle[index:] + cycle[:index]) for index in range(len(cycle))]
+                cycles.add(min(rotations))
+        stack.pop()
+        state[node_id] = 2
+
+    for node_id in sorted(scoped_ids):
+        if state[node_id] == 0:
+            visit(node_id)
+
+    return {
+        "node_count": len(scoped_nodes),
+        "edge_count": len(scoped_edges),
+        "orphaned_node_ids": orphaned,
+        "inactive_edge_ids": inactive_edges,
+        "cross_subject_edge_ids": cross_subject,
+        "self_referential_edge_ids": self_referential,
+        "duplicate_node_groups": [list(group) for group in duplicate_groups],
+        "prerequisite_cycles": [list(cycle) + [cycle[0]] for cycle in sorted(cycles)],
     }
