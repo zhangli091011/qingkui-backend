@@ -40,6 +40,20 @@ class ChangePasswordRequest(BaseModel):
     new_password: str = Field(min_length=8, max_length=128)
 
 
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
+
+
+class PasswordResetConfirm(BaseModel):
+    token: str = Field(min_length=32, max_length=256)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+class PasswordResetRequestResponse(BaseModel):
+    message: str
+    reset_token: str | None = None
+
+
 class UserResponse(ApiModel):
     id: str
     username: str

@@ -1,6 +1,8 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import jwt
+import hashlib
+import secrets
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import select, update
 
@@ -11,6 +13,7 @@ from app.models import (
     CreditAccount,
     CreditLedger,
     RefreshSession,
+    PasswordResetToken,
     User,
 )
 from app.schemas import (
@@ -21,14 +24,22 @@ from app.schemas import (
     LogoutRequest,
     MessageResponse,
     RefreshRequest,
+    PasswordResetRequest,
+    PasswordResetConfirm,
+    PasswordResetRequestResponse,
     RegisterRequest,
     UserResponse,
 )
 from app.security import create_access_token, create_refresh_token, decode_token, hash_password, verify_password
 from app.services.user_lifecycle import erase_user_account
+from app.services.email_delivery import send_password_reset_email
 
 
 router = APIRouter(prefix="/auth", tags=["账户"])
+
+
+def _reset_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def _session_is_active(session: RefreshSession, now: datetime) -> bool:
@@ -203,6 +214,81 @@ def change_password(payload: ChangePasswordRequest, db: DbSession, user: Current
     db.add(AuditLog(actor_user_id=user.id, action="user.password_changed", target_type="user", target_id=user.id))
     db.commit()
     return MessageResponse(message="密码已修改，请重新登录")
+
+
+@router.post(
+    "/password-reset/request",
+    response_model=PasswordResetRequestResponse,
+    response_model_exclude_none=True,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def request_password_reset(payload: PasswordResetRequest, db: DbSession) -> PasswordResetRequestResponse:
+    generic = "如果该邮箱已绑定账户，重置邮件将很快发送。"
+    email = str(payload.email).lower()
+    user = db.scalar(select(User).where(User.email == email, User.is_active.is_(True)))
+    if user is None:
+        return PasswordResetRequestResponse(message=generic)
+    now = datetime.now(timezone.utc)
+    db.execute(
+        update(PasswordResetToken)
+        .where(PasswordResetToken.user_id == user.id, PasswordResetToken.used_at.is_(None))
+        .values(used_at=now)
+    )
+    token = secrets.token_urlsafe(32)
+    record = PasswordResetToken(
+        user_id=user.id,
+        token_hash=_reset_hash(token),
+        expires_at=now + timedelta(minutes=settings.password_reset_minutes),
+    )
+    db.add(record)
+    db.flush()
+    try:
+        send_password_reset_email(email, token)
+    except RuntimeError:
+        db.delete(record)
+        db.add(AuditLog(actor_user_id=user.id, action="auth.password_reset_delivery_failed", target_type="user", target_id=user.id))
+        db.commit()
+        return PasswordResetRequestResponse(message=generic)
+    db.add(AuditLog(actor_user_id=user.id, action="auth.password_reset_requested", target_type="user", target_id=user.id))
+    db.commit()
+    return PasswordResetRequestResponse(
+        message=generic,
+        reset_token=token if settings.app_env == "test" else None,
+    )
+
+
+@router.post("/password-reset/confirm", response_model=MessageResponse)
+def confirm_password_reset(payload: PasswordResetConfirm, db: DbSession) -> MessageResponse:
+    now = datetime.now(timezone.utc)
+    record = db.scalar(
+        select(PasswordResetToken)
+        .where(
+            PasswordResetToken.token_hash == _reset_hash(payload.token),
+            PasswordResetToken.used_at.is_(None),
+            PasswordResetToken.expires_at > now,
+        )
+        .with_for_update()
+    )
+    if record is None:
+        raise HTTPException(status_code=400, detail="重置令牌无效或已过期")
+    user = db.get(User, record.user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=400, detail="重置令牌无效或已过期")
+    user.password_hash = hash_password(payload.new_password)
+    record.used_at = now
+    db.execute(
+        update(PasswordResetToken)
+        .where(PasswordResetToken.user_id == user.id, PasswordResetToken.id != record.id, PasswordResetToken.used_at.is_(None))
+        .values(used_at=now)
+    )
+    db.execute(
+        update(RefreshSession)
+        .where(RefreshSession.user_id == user.id, RefreshSession.revoked_at.is_(None))
+        .values(revoked_at=now)
+    )
+    db.add(AuditLog(actor_user_id=user.id, action="auth.password_reset_completed", target_type="user", target_id=user.id))
+    db.commit()
+    return MessageResponse(message="密码已重置，请使用新密码登录")
 
 
 @router.delete("/me", response_model=MessageResponse)

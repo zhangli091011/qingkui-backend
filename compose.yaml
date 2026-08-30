@@ -6,6 +6,13 @@ services:
       APP_ENV: production
       DATABASE_URL: postgresql+psycopg://qingkui:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/qingkui
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-disabled}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM_ADDRESS: ${SMTP_FROM_ADDRESS:-}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
       OSS_BUCKET: ${OSS_BUCKET:-qingkui-yuhua}
       OSS_ENDPOINT: ${OSS_ENDPOINT:-https://oss-cn-qingdao.aliyuncs.com}
       OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:-}

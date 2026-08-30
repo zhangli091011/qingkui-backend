@@ -32,7 +32,10 @@ def _redis_client() -> redis.Redis:
 
 
 def _limit_for(method: str, path: str) -> int:
-    if method == "POST" and path in {"/api/auth/register", "/api/auth/login", "/api/auth/refresh"}:
+    if method == "POST" and path in {
+        "/api/auth/register", "/api/auth/login", "/api/auth/refresh",
+        "/api/auth/password-reset/request", "/api/auth/password-reset/confirm",
+    }:
         return settings.rate_limit_auth_per_minute
     if method == "POST" and (
         path.endswith("/messages")
@@ -46,7 +49,10 @@ def _limit_for(method: str, path: str) -> int:
 
 
 def _route_bucket(method: str, path: str) -> str:
-    if method == "POST" and path in {"/api/auth/register", "/api/auth/login", "/api/auth/refresh"}:
+    if method == "POST" and path in {
+        "/api/auth/register", "/api/auth/login", "/api/auth/refresh",
+        "/api/auth/password-reset/request", "/api/auth/password-reset/confirm",
+    }:
         return path
     if method == "POST" and (
         path.endswith("/messages")

@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     refresh_token_days: int = 30
     initial_credits: int = 1280
     cors_origins: list[str] = ["*"]
+    password_reset_minutes: int = 30
+    email_provider: Literal["disabled", "smtp", "console"] = "disabled"
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from_address: str | None = None
+    smtp_starttls: bool = True
 
     ai_provider: Literal["deepseek", "stub"] = "deepseek"
     deepseek_api_key: str | None = None
