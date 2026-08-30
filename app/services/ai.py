@@ -11,7 +11,7 @@ from app.schemas import StructuredAnswer
 from app.services.knowledge import RetrievedChunk, is_casual_message
 
 
-PROMPT_VERSION = "qa-v1"
+PROMPT_VERSION = "qa-v2"
 
 
 def _api_url(path: str) -> str:
@@ -62,23 +62,33 @@ QUESTION_POLICY = """回答策略：
 
 
 def _context(nodes: list[KnowledgeNode], chunks: list[RetrievedChunk]) -> str:
-    node_context = [
-        (
-            f"[节点 {node.id}] {node.name}\n"
-            f"定义：{node.definition}\n解释：{node.explanation}\n"
-            f"来源：{node.source.title}，{node.source.location}\n证据位置：{node.source_excerpt}"
-        )
-        for node in nodes
-    ]
-    document_context = [
-        (
-            f"[文档 {item.chunk.document.id}，片段 {item.chunk.sequence + 1}] "
-            f"{item.chunk.document.title}\n{item.chunk.content}\n"
-            f"来源：{item.chunk.document.source_uri}"
-        )
-        for item in chunks
-    ]
-    return "\n\n".join(node_context + document_context)
+    payload = {
+        "nodes": [
+            {
+                "id": node.id,
+                "name": node.name,
+                "definition": node.definition,
+                "explanation": node.explanation,
+                "source_title": node.source.title,
+                "source_location": node.source.location,
+                "source_excerpt": node.source_excerpt,
+            }
+            for node in nodes
+        ],
+        "documents": [
+            {
+                "document_id": item.chunk.document.id,
+                "sequence": item.chunk.sequence + 1,
+                "title": item.chunk.document.title,
+                "content": item.chunk.content,
+                "source_uri": item.chunk.document.source_uri,
+            }
+            for item in chunks
+        ],
+    }
+    # Prevent retrieved text from closing the prompt delimiter. The decoded
+    # JSON remains readable to the model while angle brackets stay inert.
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c").replace(">", "\\u003e")
 
 
 def _formula_reference(question: str) -> str:

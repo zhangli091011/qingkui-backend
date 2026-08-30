@@ -73,7 +73,8 @@ def downgrade() -> None:
     inspector = sa.inspect(op.get_bind())
     if "feedback_submissions" in inspector.get_table_names():
         columns = {column["name"] for column in inspector.get_columns("feedback_submissions")}
-        if "reviewed_by" in columns:
+        indexes = {index["name"] for index in inspector.get_indexes("feedback_submissions")}
+        if "reviewed_by" in columns and "ix_feedback_submissions_reviewed_by" in indexes:
             op.drop_index("ix_feedback_submissions_reviewed_by", table_name="feedback_submissions")
         removable = [name for name in ("reviewed_at", "reviewed_by", "review_note") if name in columns]
         if removable:
@@ -84,7 +85,12 @@ def downgrade() -> None:
                 for name in removable:
                     batch_op.drop_column(name)
     if "knowledge_node_versions" in inspector.get_table_names():
-        op.drop_index("ix_knowledge_node_versions_created_by", table_name="knowledge_node_versions")
-        op.drop_index("ix_knowledge_node_versions_status", table_name="knowledge_node_versions")
-        op.drop_index("ix_knowledge_node_versions_node_id", table_name="knowledge_node_versions")
+        indexes = {index["name"] for index in inspector.get_indexes("knowledge_node_versions")}
+        for name in (
+            "ix_knowledge_node_versions_created_by",
+            "ix_knowledge_node_versions_status",
+            "ix_knowledge_node_versions_node_id",
+        ):
+            if name in indexes:
+                op.drop_index(name, table_name="knowledge_node_versions")
         op.drop_table("knowledge_node_versions")

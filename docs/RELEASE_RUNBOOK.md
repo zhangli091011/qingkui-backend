@@ -30,6 +30,8 @@
 4. MDM 重新发布上一签名 APK；由于 Android 不允许降 versionCode，回滚包使用相同代码但更高 versionCode。
 5. 记录影响范围、时间线、数据修复和防复发项。
 
+完整的隔离恢复演练、RPO/RTO 和通过条件见 `docs/DISASTER_RECOVERY.md`。每次数据库迁移进入生产前，必须存在最近 30 天内成功的隔离恢复报告。
+
 ## HTTPS 证书
 
 - 生产域名为 `qingkui-api.82-158-229-157.sslip.io`，证书由 Certbot webroot 模式签发。

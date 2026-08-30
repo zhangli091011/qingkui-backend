@@ -1,6 +1,6 @@
 import json
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -21,6 +21,12 @@ from app.models import (
 from app.schemas import ConversationCreate, ConversationMessageCreate, ConversationResponse, QaResult
 from app.services.ai import AiStreamState, PROMPT_VERSION, answer_question, stream_answer_text
 from app.services.knowledge import RetrievedChunk, retrieve_chunks, retrieve_nodes
+from app.services.idempotency import (
+    complete_idempotency,
+    fail_idempotency,
+    payload_hash,
+    reserve_idempotency,
+)
 from app.services.model_calls import add_model_call, start_model_timer
 from app.subjects import normalize_subject, resolve_subject
 
@@ -30,6 +36,24 @@ router = APIRouter(prefix="/qa", tags=["AI 问答"])
 
 def _sse(event: str, payload: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _message_request_hash(payload: ConversationMessageCreate) -> str:
+    return payload_hash(payload.model_dump(mode="json"))
+
+
+def _cached_stream(result: QaResult):
+    yield _sse(
+        "meta",
+        {
+            "conversation_id": result.conversation_id,
+            "credits_required": result.credits_charged,
+            "cached": True,
+        },
+    )
+    if result.assistant_message.content:
+        yield _sse("delta", {"content": result.assistant_message.content, "cached": True})
+    yield _sse("done", json.loads(result.model_dump_json()))
 
 
 def _citations(nodes: list[KnowledgeNode], chunks: list[RetrievedChunk]) -> list[dict]:
@@ -123,6 +147,7 @@ def send_message(
     payload: ConversationMessageCreate,
     db: DbSession,
     user: CurrentUser,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> QaResult:
     conversation = db.scalar(
         select(Conversation).where(Conversation.id == session_id, Conversation.user_id == user.id)
@@ -132,11 +157,24 @@ def send_message(
     if not settings.ai_ready:
         raise HTTPException(status_code=503, detail="AI 服务尚未配置")
 
+    reservation = reserve_idempotency(
+        db,
+        user_id=user.id,
+        scope=f"qa:{conversation.id}",
+        key=idempotency_key,
+        request_hash=_message_request_hash(payload),
+    )
+    if reservation is not None and not reservation.acquired:
+        return QaResult.model_validate(reservation.response_body)
+    idempotency_request_id = reservation.request_id if reservation is not None else None
+
     cost = 2 if payload.help_level.value == "full" else 1
     account = db.scalar(
         select(CreditAccount).where(CreditAccount.user_id == user.id).with_for_update()
     )
     if account is None or account.balance < cost:
+        fail_idempotency(db, idempotency_request_id)
+        db.commit()
         raise HTTPException(status_code=402, detail="额度不足")
 
     subject = resolve_subject(payload.content) or normalize_subject(conversation.subject)
@@ -163,6 +201,7 @@ def send_message(
             error_code="provider_error",
             reference_id=conversation.id,
         )
+        fail_idempotency(db, idempotency_request_id)
         db.commit()
         raise HTTPException(status_code=502, detail="AI 服务暂时不可用，未扣除额度") from exc
 
@@ -233,11 +272,11 @@ def send_message(
         output_tokens=ai_result.output_tokens,
         reference_id=assistant_message.id,
     )
-    db.commit()
+    db.flush()
     db.refresh(user_message)
     db.refresh(assistant_message)
     db.refresh(account)
-    return QaResult(
+    result = QaResult(
         conversation_id=conversation.id,
         user_message=user_message,
         assistant_message=assistant_message,
@@ -245,9 +284,17 @@ def send_message(
         balance=account.balance,
         subject=subject,
     )
+    complete_idempotency(db, idempotency_request_id, result.model_dump(mode="json"))
+    db.commit()
+    return result
 
 
-def _stream_message(session_id: str, user_id: str, payload: ConversationMessageCreate):
+def _stream_message(
+    session_id: str,
+    user_id: str,
+    payload: ConversationMessageCreate,
+    idempotency_request_id: str | None = None,
+):
     with SessionLocal() as db:
         conversation = db.scalar(
             select(Conversation).where(Conversation.id == session_id, Conversation.user_id == user_id)
@@ -258,6 +305,8 @@ def _stream_message(session_id: str, user_id: str, payload: ConversationMessageC
         cost = 2 if payload.help_level.value == "full" else 1
         account = db.scalar(select(CreditAccount).where(CreditAccount.user_id == user_id).with_for_update())
         if account is None or account.balance < cost:
+            fail_idempotency(db, idempotency_request_id)
+            db.commit()
             yield _sse("error", {"status": 402, "detail": "额度不足"})
             return
         yield _sse("meta", {"conversation_id": conversation.id, "credits_required": cost})
@@ -292,6 +341,7 @@ def _stream_message(session_id: str, user_id: str, payload: ConversationMessageC
                 error_code="provider_error",
                 reference_id=conversation.id,
             )
+            fail_idempotency(db, idempotency_request_id)
             db.commit()
             yield _sse("error", {"status": 502, "detail": "AI 服务暂时不可用，未扣除额度"})
             return
@@ -359,7 +409,7 @@ def _stream_message(session_id: str, user_id: str, payload: ConversationMessageC
             output_tokens=state.output_tokens,
             reference_id=assistant_message.id,
         )
-        db.commit()
+        db.flush()
         db.refresh(user_message)
         db.refresh(assistant_message)
         db.refresh(account)
@@ -371,6 +421,8 @@ def _stream_message(session_id: str, user_id: str, payload: ConversationMessageC
             balance=account.balance,
             subject=subject,
         )
+        complete_idempotency(db, idempotency_request_id, result.model_dump(mode="json"))
+        db.commit()
         yield _sse("done", json.loads(result.model_dump_json()))
 
 
@@ -380,6 +432,7 @@ def stream_message(
     payload: ConversationMessageCreate,
     db: DbSession,
     user: CurrentUser,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> StreamingResponse:
     conversation = db.scalar(
         select(Conversation).where(Conversation.id == session_id, Conversation.user_id == user.id)
@@ -388,12 +441,29 @@ def stream_message(
         raise HTTPException(status_code=404, detail="会话不存在")
     if not settings.ai_ready:
         raise HTTPException(status_code=503, detail="AI 服务尚未配置")
+    reservation = reserve_idempotency(
+        db,
+        user_id=user.id,
+        scope=f"qa:{conversation.id}",
+        key=idempotency_key,
+        request_hash=_message_request_hash(payload),
+    )
+    if reservation is not None and not reservation.acquired:
+        cached = QaResult.model_validate(reservation.response_body)
+        return StreamingResponse(
+            _cached_stream(cached),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Idempotency-Replayed": "true"},
+        )
+    idempotency_request_id = reservation.request_id if reservation is not None else None
     cost = 2 if payload.help_level.value == "full" else 1
     account = db.scalar(select(CreditAccount).where(CreditAccount.user_id == user.id))
     if account is None or account.balance < cost:
+        fail_idempotency(db, idempotency_request_id)
+        db.commit()
         raise HTTPException(status_code=402, detail="额度不足")
     return StreamingResponse(
-        _stream_message(session_id, user.id, payload),
+        _stream_message(session_id, user.id, payload, idempotency_request_id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
