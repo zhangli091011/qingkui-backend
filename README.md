@@ -126,6 +126,8 @@ V2 学校、班级、邀请码和匿名教师概览已具备隔离模型与接�
 
 所有业务接口使用 `Authorization: Bearer <access_token>`。DeepSeek 密钥只保存在服务端环境变量中。普通问答消耗 1 额度，完整解析消耗 2 额度；供应商失败时数据库事务回滚，不扣额度。
 
+正式 AI 质量门使用人工复核评测，而不是关键词命中率。运行与评分命令、字段定义和首发数学阈值见 `docs/AI_EVALUATION.md`；种子集位于 `config/evaluation/math-v1.json`。
+
 ## 数据库与部署
 
 本地默认 SQLite；生产使用 PostgreSQL：

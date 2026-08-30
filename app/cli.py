@@ -299,6 +299,24 @@ def main() -> None:
     benchmark_command = subparsers.add_parser("qa-benchmark", help="run the local six-level QA benchmark")
     benchmark_command.add_argument("--output", default="qa-benchmark-report.json")
     benchmark_command.add_argument("--workers", type=int, default=4, choices=range(1, 9), help="并发题目数，建议不超过4以避免模型限流")
+    eval_run_command = subparsers.add_parser(
+        "qa-eval-run",
+        help="generate answers and sources for a human-reviewed QA evaluation",
+    )
+    eval_run_command.add_argument("--dataset", required=True)
+    eval_run_command.add_argument("--output", required=True)
+    eval_run_command.add_argument("--workers", type=int, default=4, choices=range(1, 9))
+    eval_score_command = subparsers.add_parser(
+        "qa-eval-score",
+        help="calculate release metrics from a completed human review file",
+    )
+    eval_score_command.add_argument("--run", required=True)
+    eval_score_command.add_argument("--output")
+    eval_score_command.add_argument(
+        "--allow-incomplete",
+        action="store_true",
+        help="emit interim metrics while keeping the release gate failed",
+    )
     history_command = subparsers.add_parser("history-qa-batch", help="8并发生成历史题答案，不进行评分")
     history_command.add_argument("--workers", type=int, default=8, choices=range(1, 9))
     history_command.add_argument("--output", default="history-qa-answers.json")
@@ -356,6 +374,27 @@ def main() -> None:
 
         report = run_benchmark(Path(args.output).resolve(), workers=args.workers)
         print(f"QA benchmark: questions={report['question_count']}, workers={report['workers']}, accuracy={report['accuracy']:.1%}, score={report['score_100']:.2f}/100, elapsed={report['elapsed_seconds']:.1f}s")
+    elif args.command == "qa-eval-run":
+        from app.human_evaluation import run_human_evaluation
+
+        report = run_human_evaluation(
+            Path(args.dataset).resolve(),
+            Path(args.output).resolve(),
+            workers=args.workers,
+        )
+        print(
+            f"Human evaluation run: dataset={report['dataset']['id']}, cases={report['case_count']}, "
+            f"errors={report['execution_errors']}, workers={report['workers']}, output={args.output}"
+        )
+    elif args.command == "qa-eval-score":
+        from app.human_evaluation import score_human_evaluation
+
+        report = score_human_evaluation(
+            Path(args.run).resolve(),
+            Path(args.output).resolve() if args.output else None,
+            allow_incomplete=args.allow_incomplete,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
     elif args.command == "history-qa-batch":
         from app.history_batch import run_history_batch
 
