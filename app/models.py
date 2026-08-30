@@ -321,6 +321,11 @@ class MistakeProblem(Base):
     question_goal: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     error_category: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
     error_note: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    analysis: Mapped[dict] = mapped_column(JSON, default=dict)
+    analysis_status: Mapped[str] = mapped_column(String(30), default="not_started", index=True)
+    analysis_provider: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    analysis_model: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    analyzed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     knowledge_node_id: Mapped[str | None] = mapped_column(
         ForeignKey("knowledge_nodes.id", ondelete="SET NULL"), nullable=True, index=True
     )

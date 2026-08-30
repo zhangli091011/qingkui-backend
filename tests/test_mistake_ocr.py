@@ -106,6 +106,10 @@ def test_upload_ocr_confirm_and_practice_lifecycle(client: TestClient, account, 
     assert result.json()["status"] == "succeeded"
     assert result.json()["requires_review"] is True
     assert result.json()["formulas"][0]["latex"] == "x^2"
+    balance_before_review = client.get("/api/credits", headers=headers).json()["balance"]
+    blocked_analysis = client.post(f"/api/mistakes/{mistake['id']}/analyze", headers=headers)
+    assert blocked_analysis.status_code == 409
+    assert client.get("/api/credits", headers=headers).json()["balance"] == balance_before_review
 
     confirmed = client.post(
         f"/api/mistakes/{mistake['id']}/ocr/{task['id']}/confirm",
@@ -126,7 +130,9 @@ def test_upload_ocr_confirm_and_practice_lifecycle(client: TestClient, account, 
     )
     assert submitted.status_code == 200
     detail = client.get(f"/api/mistakes/{mistake['id']}", headers=headers).json()
-    assert detail["study_status"] == "mastered"
+    assert detail["study_status"] == "reviewing"
+    assert detail["practices"][0]["validation_details"]["method"] == "self_report"
+    assert detail["practices"][0]["validation_details"]["authoritative"] is False
     assert detail["attempt_count"] == 1
 
 

@@ -14,6 +14,7 @@ def test_health(client: TestClient):
 def test_graph_qa_learning_and_credit_flow(client: TestClient, account):
     auth, headers = account
     assert auth["user"]["nickname"] == "测试同学"
+    starting_balance = client.get("/api/credits", headers=headers).json()["balance"]
 
     search = client.get("/api/knowledge/search", params={"q": "二次函数"}, headers=headers)
     assert search.status_code == 200
@@ -39,14 +40,14 @@ def test_graph_qa_learning_and_credit_flow(client: TestClient, account):
     assert answer.status_code == 200, answer.text
     result = answer.json()
     assert result["credits_charged"] == 1
-    assert result["balance"] == 1279
+    assert result["balance"] == starting_balance - 1
     assert result["assistant_message"]["citations"][0]["node_id"] == "quadratic_function"
     assert result["assistant_message"]["structured_content"]["uncertain"] is False
 
     credits = client.get("/api/credits/ledger", headers=headers)
     assert credits.status_code == 200
     assert credits.json()[0]["entry_type"] == "qa_charge"
-    assert credits.json()[0]["balance_after"] == 1279
+    assert credits.json()[0]["balance_after"] == starting_balance - 1
 
     summary = client.get("/api/learning/summary", headers=headers)
     assert summary.status_code == 200

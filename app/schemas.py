@@ -216,6 +216,11 @@ class MistakeResponse(ApiModel):
     question_goal: str | None
     error_category: str | None
     error_note: str | None
+    analysis: dict
+    analysis_status: str
+    analysis_provider: str | None
+    analysis_model: str | None
+    analyzed_at: datetime | None
     knowledge_node_id: str | None
     link_status: str
     review_status: str
@@ -240,8 +245,29 @@ class PracticeCreate(BaseModel):
 
 class PracticeSubmit(BaseModel):
     student_answer: str = Field(min_length=1, max_length=12000)
-    is_correct: bool
+    is_correct: bool | None = None
     validation_details: dict = Field(default_factory=dict)
+
+
+class MistakeAnalysisData(BaseModel):
+    diagnosis: str = Field(min_length=1, max_length=4000)
+    error_category: str = Field(pattern=r"^(concept|reading|method|calculation|expression)$")
+    error_note: str = Field(min_length=1, max_length=2000)
+    correction_steps: list[str] = Field(default_factory=list, max_length=8)
+    suggested_node_id: str | None = Field(default=None, max_length=64)
+    node_confidence: float = Field(default=0, ge=0, le=1)
+    similar_question: str = Field(min_length=1, max_length=12000)
+    answer_reference: str = Field(min_length=1, max_length=12000)
+    uncertain: bool = False
+
+
+class MistakeAnalysisResponse(BaseModel):
+    mistake_id: str
+    analysis: MistakeAnalysisData
+    credits_charged: int
+    balance: int
+    provider: str
+    model: str
 
 
 class ConversationCreate(BaseModel):
