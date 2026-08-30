@@ -187,6 +187,7 @@ class KnowledgeNodeSummary(ApiModel):
     subject: str
     grade: str
     chapter: str
+    section: str = "本章知识点"
     definition: str
     status: KnowledgeStatus = KnowledgeStatus.unexplored
 
@@ -219,6 +220,36 @@ class SubjectClassificationResponse(BaseModel):
     margin: float
     source: str
     scores: dict[str, float]
+
+
+class KnowledgeCatalogItem(BaseModel):
+    subject: str
+    grade: str
+    textbook_version: str
+    node_count: int
+
+
+class KnowledgeTreeNode(BaseModel):
+    id: str
+    name: str
+    status: KnowledgeStatus
+
+
+class KnowledgeTreeSection(BaseModel):
+    name: str
+    nodes: list[KnowledgeTreeNode]
+
+
+class KnowledgeTreeChapter(BaseModel):
+    name: str
+    sections: list[KnowledgeTreeSection]
+
+
+class KnowledgeTreeResponse(BaseModel):
+    subject: str
+    grade: str
+    textbook_version: str
+    chapters: list[KnowledgeTreeChapter]
 
 
 class KnowledgeStateUpdate(BaseModel):
@@ -874,6 +905,7 @@ class KnowledgeNodeCreate(BaseModel):
     grade: str = Field(min_length=1, max_length=40)
     textbook_version: str = Field(min_length=1, max_length=80)
     chapter: str = Field(min_length=1, max_length=120)
+    section: str = Field(default="本章知识点", min_length=1, max_length=120)
     definition: str = Field(min_length=2, max_length=4000)
     explanation: str = Field(min_length=2, max_length=12000)
     common_errors: list[str] = Field(default_factory=list, max_length=30)
@@ -886,6 +918,7 @@ class KnowledgeNodeCreate(BaseModel):
 class KnowledgeNodeUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     chapter: str | None = Field(default=None, min_length=1, max_length=120)
+    section: str | None = Field(default=None, min_length=1, max_length=120)
     definition: str | None = Field(default=None, min_length=2, max_length=4000)
     explanation: str | None = Field(default=None, min_length=2, max_length=12000)
     common_errors: list[str] | None = Field(default=None, max_length=30)

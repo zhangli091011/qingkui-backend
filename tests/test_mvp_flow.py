@@ -58,6 +58,17 @@ def test_subject_catalog_and_auto_routing(client: TestClient, account):
     _, headers = account
     subjects = client.get("/api/knowledge/subjects", headers=headers)
     assert subjects.status_code == 200
+    catalog = client.get("/api/knowledge/catalog", headers=headers)
+    assert catalog.status_code == 200
+    math_scope = next(item for item in catalog.json() if item["subject"] == "数学")
+    tree = client.get(
+        "/api/knowledge/tree",
+        params={"subject": math_scope["subject"], "grade": math_scope["grade"], "textbook_version": math_scope["textbook_version"]},
+        headers=headers,
+    )
+    assert tree.status_code == 200
+    assert tree.json()["chapters"]
+    assert tree.json()["chapters"][0]["sections"][0]["nodes"]
     assert subjects.json() == ["语文", "数学", "英语", "物理", "化学", "生物", "政治", "历史", "地理"]
 
     session = client.post("/api/qa/sessions", json={"mode": "knowledge"}, headers=headers)

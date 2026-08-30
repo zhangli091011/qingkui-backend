@@ -247,6 +247,7 @@ class KnowledgeNode(Base):
     grade: Mapped[str] = mapped_column(String(40), index=True)
     textbook_version: Mapped[str] = mapped_column(String(80))
     chapter: Mapped[str] = mapped_column(String(120), index=True)
+    section: Mapped[str] = mapped_column(String(120), default="本章知识点", index=True)
     definition: Mapped[str] = mapped_column(Text)
     explanation: Mapped[str] = mapped_column(Text)
     common_errors: Mapped[list[str]] = mapped_column(JSON, default=list)
