@@ -14,6 +14,11 @@ if [[ $# -lt 1 || $# -gt 2 ]]; then
   usage
   exit 2
 fi
+python_bin=$(command -v python3 || command -v python || true)
+if [[ -z "$python_bin" ]]; then
+  echo "python3 or python is required to write the recovery report" >&2
+  exit 2
+fi
 
 backup_input=$1
 report_input=${2:-}
@@ -92,7 +97,7 @@ else
   echo "[5/5] Full OSS document audit skipped (use --full-oss to enable)"
 fi
 
-python - "$report" "$stamp" "$backup" "$backup_sha256" "$db_metrics" \
+"$python_bin" - "$report" "$stamp" "$backup" "$backup_sha256" "$db_metrics" \
   "$current_sha256" "$previous_sha256" "$oss_status" <<'PY'
 import json
 import sys
