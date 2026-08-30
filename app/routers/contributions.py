@@ -14,6 +14,7 @@ from app.schemas import (
     ContributionSettlementResponse,
 )
 from app.services.contributions import enqueue_contribution_review
+from app.services.content_safety import moderate_text, moderation_text, record_safety_event
 
 
 router = APIRouter(prefix="/contributions", tags=["内容投稿"])
@@ -54,6 +55,23 @@ def create_contribution(
     user: CurrentUser,
 ) -> ContentContribution:
     _contributions_enabled()
+    content = moderation_text(payload.title, payload.content, payload.source_reference)
+    decision = moderate_text(content)
+    if not decision.allowed:
+        record_safety_event(
+            db,
+            user_id=user.id,
+            action="safety.contribution_input_blocked",
+            decision=decision,
+            content=content,
+            target_type="content_contribution",
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=422,
+            detail=decision.message,
+            headers={"X-Content-Safety": "blocked"},
+        )
     contribution = ContentContribution(
         user_id=user.id,
         school_id=user.tenant_id,

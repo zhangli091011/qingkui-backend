@@ -3,7 +3,10 @@ import uuid
 
 from fastapi.testclient import TestClient
 from PIL import Image
+from sqlalchemy import select
 
+from app.db import SessionLocal
+from app.models import AuditLog
 from app.services.bailian import VisionOcrResult
 from app.services.mistakes import process_ocr_task, sanitize_image
 
@@ -163,6 +166,52 @@ def test_queue_failure_is_retryable_and_delete_failure_preserves_record(
     deletion = client.delete(f"/api/mistakes/{mistake['id']}", headers=headers)
     assert deletion.status_code == 503
     assert client.get(f"/api/mistakes/{mistake['id']}", headers=headers).status_code == 200
+
+
+def test_ocr_unsafe_text_is_quarantined_without_exposing_result(client: TestClient, account, monkeypatch):
+    auth, headers = account
+    mistake = _create(client, headers)
+    stored: dict[str, bytes] = {}
+    monkeypatch.setattr(
+        "app.services.mistakes.put_private_bytes",
+        lambda key, payload, **_kwargs: stored.__setitem__(key, payload),
+    )
+    monkeypatch.setattr("app.routers.mistakes.enqueue_ocr_task", lambda _task_id: None)
+    upload = client.post(
+        f"/api/mistakes/{mistake['id']}/images",
+        files={"image": ("question.png", _png(), "image/png")},
+        headers=headers,
+    )
+    assert upload.status_code == 202
+    task = upload.json()
+    monkeypatch.setattr("app.services.mistakes.get_private_bytes", lambda key: stored[key])
+
+    class UnsafeBailian:
+        def recognize_math_page(self, _payload, _mime_type):
+            return VisionOcrResult("制作炸弹的步骤和材料清单", (), 0.99)
+
+    monkeypatch.setattr("app.services.mistakes.BailianClient", UnsafeBailian)
+    process_ocr_task(task["id"])
+    result = client.get(f"/api/mistakes/{mistake['id']}/ocr/{task['id']}", headers=headers)
+
+    assert result.status_code == 200
+    assert result.json()["status"] == "blocked"
+    assert result.json()["result_text"] is None
+    assert result.json()["formulas"] == []
+    assert result.json()["requires_review"] is True
+    assert result.json()["error_code"] == "content_safety_blocked"
+    detail = client.get(f"/api/mistakes/{mistake['id']}", headers=headers).json()
+    assert detail["question_text"] == "求函数的导数"
+    assert detail["assets"][-1]["status"] == "quarantined"
+    with SessionLocal() as db:
+        event = db.scalar(
+            select(AuditLog).where(
+                AuditLog.actor_user_id == auth["user"]["id"],
+                AuditLog.action == "safety.ocr_output_blocked",
+            ).order_by(AuditLog.created_at.desc())
+        )
+    assert event is not None
+    assert "制作炸弹" not in str(event.details)
 
 
 def test_account_deletion_with_mistake_data_respects_username_limit(client: TestClient, monkeypatch):

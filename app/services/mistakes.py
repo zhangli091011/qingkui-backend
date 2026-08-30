@@ -13,6 +13,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.db import SessionLocal
 from app.models import MistakeAsset, MistakeProblem, OcrTask
+from app.services.content_safety import moderate_text, record_safety_event
 from app.services.bailian import BailianClient
 from app.services.object_storage import delete_private_object, get_private_bytes, put_private_bytes
 
@@ -177,6 +178,32 @@ def process_ocr_task(task_id: str) -> None:
             db.commit()
             return
         mistake = db.get(MistakeProblem, task.mistake_id)
+        safety_decision = moderate_text(combined)
+        if not safety_decision.allowed:
+            task.status = "blocked"
+            task.result_text = None
+            task.formulas = []
+            task.confidence = confidence
+            task.requires_review = True
+            task.error_code = "content_safety_blocked"
+            task.error_message = "识别内容已被安全隔离，可删除图片或联系管理员复核。"
+            task.completed_at = datetime.now(timezone.utc)
+            if mistake is not None:
+                mistake.review_status = "needs_review"
+            asset = db.get(MistakeAsset, task.asset_id)
+            if asset is not None:
+                asset.status = "quarantined"
+            record_safety_event(
+                db,
+                user_id=task.user_id,
+                action="safety.ocr_output_blocked",
+                decision=safety_decision,
+                content=combined,
+                target_type="ocr_task",
+                target_id=task.id,
+            )
+            db.commit()
+            return
         task.status = "succeeded"
         task.result_text = combined
         task.formulas = formulas

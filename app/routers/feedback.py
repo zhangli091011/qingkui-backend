@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from app.models import Conversation, FeedbackSubmission, KnowledgeNode, LearningEvent, Message
 from app.schemas import FeedbackCreate, FeedbackResponse
+from app.services.content_safety import moderate_text, record_safety_event
 
 
 router = APIRouter(prefix="/feedback", tags=["问题反馈"])
@@ -12,6 +13,22 @@ router = APIRouter(prefix="/feedback", tags=["问题反馈"])
 
 @router.post("", response_model=FeedbackResponse, status_code=201)
 def submit_feedback(payload: FeedbackCreate, db: DbSession, user: CurrentUser) -> FeedbackSubmission:
+    decision = moderate_text(payload.content)
+    if not decision.allowed:
+        record_safety_event(
+            db,
+            user_id=user.id,
+            action="safety.feedback_input_blocked",
+            decision=decision,
+            content=payload.content,
+            target_type="feedback",
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=422,
+            detail=decision.message,
+            headers={"X-Content-Safety": "blocked"},
+        )
     if payload.node_id and db.get(KnowledgeNode, payload.node_id) is None:
         raise HTTPException(status_code=404, detail="知识点不存在")
     if payload.message_id:

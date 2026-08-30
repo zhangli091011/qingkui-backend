@@ -20,6 +20,12 @@ from app.models import (
 )
 from app.schemas import ConversationCreate, ConversationMessageCreate, ConversationResponse, QaResult
 from app.services.ai import AiStreamState, PROMPT_VERSION, answer_question, stream_answer_text
+from app.services.content_safety import (
+    BufferedSafetyFilter,
+    ContentSafetyViolation,
+    moderate_text,
+    record_safety_event,
+)
 from app.services.knowledge import RetrievedChunk, retrieve_chunks, retrieve_nodes
 from app.services.idempotency import (
     complete_idempotency,
@@ -32,6 +38,27 @@ from app.subjects import normalize_subject, resolve_subject
 
 
 router = APIRouter(prefix="/qa", tags=["AI 问答"])
+
+
+def _enforce_safe_input(db: DbSession, user_id: str, content: str, conversation_id: str) -> None:
+    decision = moderate_text(content)
+    if decision.allowed:
+        return
+    record_safety_event(
+        db,
+        user_id=user_id,
+        action="safety.qa_input_blocked",
+        decision=decision,
+        content=content,
+        target_type="conversation",
+        target_id=conversation_id,
+    )
+    db.commit()
+    raise HTTPException(
+        status_code=422,
+        detail=decision.message,
+        headers={"X-Content-Safety": "blocked"},
+    )
 
 
 def _sse(event: str, payload: dict) -> str:
@@ -161,6 +188,7 @@ def send_message(
     )
     if conversation is None:
         raise HTTPException(status_code=404, detail="会话不存在")
+    _enforce_safe_input(db, user.id, payload.content, conversation.id)
     if not settings.ai_ready:
         raise HTTPException(status_code=503, detail="AI 服务尚未配置")
 
@@ -215,6 +243,36 @@ def send_message(
     citations = _citations(nodes, chunks)
     answer = ai_result.answer
     rendered = f"{answer.conclusion}\n\n{answer.explanation}\n\n下一步：{answer.next_step}"
+    output_decision = moderate_text(rendered)
+    if not output_decision.allowed:
+        db.rollback()
+        fail_idempotency(db, idempotency_request_id)
+        record_safety_event(
+            db,
+            user_id=user.id,
+            action="safety.qa_output_blocked",
+            decision=output_decision,
+            content=rendered,
+            target_type="conversation",
+            target_id=conversation.id,
+        )
+        add_model_call(
+            db,
+            user_id=user.id,
+            feature=f"qa_{conversation.mode.value}",
+            provider=ai_result.provider,
+            model=ai_result.model,
+            success=False,
+            started_at=model_started_at,
+            error_code="output_safety_blocked",
+            reference_id=conversation.id,
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=422,
+            detail="回答触发内容安全保护，未扣除额度。请换一种学习问题表述。",
+            headers={"X-Content-Safety": "blocked"},
+        )
     assistant_message = Message(
         conversation_id=conversation.id,
         role="assistant",
@@ -324,9 +382,10 @@ def _stream_message(
         chunks = retrieve_chunks(db, payload.content, subject=subject)
         citations = _citations(nodes, chunks)
         state = AiStreamState()
+        safety_filter = BufferedSafetyFilter()
         model_started_at = start_model_timer()
         try:
-            for chunk in stream_answer_text(
+            for raw_chunk in stream_answer_text(
                 payload.content,
                 conversation.mode,
                 payload.help_level,
@@ -334,7 +393,46 @@ def _stream_message(
                 chunks,
                 state,
             ):
-                yield _sse("delta", {"content": chunk})
+                chunk = safety_filter.feed(raw_chunk)
+                if chunk:
+                    yield _sse("delta", {"content": chunk})
+            tail = safety_filter.finish()
+            if tail:
+                yield _sse("delta", {"content": tail})
+        except ContentSafetyViolation as exc:
+            db.rollback()
+            fail_idempotency(db, idempotency_request_id)
+            record_safety_event(
+                db,
+                user_id=user_id,
+                action="safety.qa_output_blocked",
+                decision=exc.decision,
+                content=state.content,
+                target_type="conversation",
+                target_id=conversation.id,
+            )
+            add_model_call(
+                db,
+                user_id=user_id,
+                feature=f"qa_{conversation.mode.value}",
+                provider=state.provider or settings.ai_provider,
+                model=state.model or settings.deepseek_model,
+                success=False,
+                started_at=model_started_at,
+                error_code="output_safety_blocked",
+                reference_id=conversation.id,
+            )
+            db.commit()
+            yield _sse(
+                "error",
+                {"status": 422, "detail": "回答触发内容安全保护，未扣除额度。请换一种学习问题表述。"},
+            )
+            return
+        except GeneratorExit:
+            db.rollback()
+            fail_idempotency(db, idempotency_request_id)
+            db.commit()
+            raise
         except RuntimeError:
             db.rollback()
             add_model_call(
@@ -446,6 +544,7 @@ def stream_message(
     )
     if conversation is None:
         raise HTTPException(status_code=404, detail="会话不存在")
+    _enforce_safe_input(db, user.id, payload.content, conversation.id)
     if not settings.ai_ready:
         raise HTTPException(status_code=503, detail="AI 服务尚未配置")
     reservation = reserve_idempotency(

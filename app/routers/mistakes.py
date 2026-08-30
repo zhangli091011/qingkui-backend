@@ -42,6 +42,7 @@ from app.schemas import (
     WeeklyMistakeLink,
 )
 from app.services.knowledge import retrieve_chunks, retrieve_nodes
+from app.services.content_safety import moderate_text, moderation_text, record_safety_event
 from app.services.mistake_analysis import PROMPT_VERSION as ANALYSIS_PROMPT_VERSION
 from app.services.mistake_analysis import analyze_mistake_content
 from app.services.mistakes import delete_assets, enqueue_ocr_task, store_mistake_image
@@ -51,6 +52,33 @@ from app.services.practice_validation import validate_practice_answer
 
 
 router = APIRouter(prefix="/mistakes", tags=["错题本"])
+
+
+def _enforce_safe_mistake_input(
+    db: DbSession,
+    user_id: str,
+    content: str,
+    *,
+    target_id: str | None = None,
+) -> None:
+    decision = moderate_text(content)
+    if decision.allowed:
+        return
+    record_safety_event(
+        db,
+        user_id=user_id,
+        action="safety.mistake_input_blocked",
+        decision=decision,
+        content=content,
+        target_type="mistake",
+        target_id=target_id,
+    )
+    db.commit()
+    raise HTTPException(
+        status_code=422,
+        detail=decision.message,
+        headers={"X-Content-Safety": "blocked"},
+    )
 
 
 def _utc(value: datetime) -> datetime:
@@ -80,6 +108,11 @@ def _owned_mistake(db: DbSession, mistake_id: str, user_id: str, *, detail: bool
 def create_mistake(payload: MistakeCreate, db: DbSession, user: CurrentUser) -> MistakeProblem:
     if not any((payload.question_text, payload.student_work, payload.question_goal)):
         raise HTTPException(status_code=422, detail="请至少填写题目、作答过程或提问目标")
+    _enforce_safe_mistake_input(
+        db,
+        user.id,
+        moderation_text(payload.question_text, payload.student_work, payload.question_goal, payload.error_category),
+    )
     mistake = MistakeProblem(user_id=user.id, **payload.model_dump())
     db.add(mistake)
     db.flush()
@@ -219,6 +252,7 @@ def get_mistake(mistake_id: str, db: DbSession, user: CurrentUser) -> MistakePro
 def update_mistake(mistake_id: str, payload: MistakeUpdate, db: DbSession, user: CurrentUser) -> MistakeProblem:
     mistake = _owned_mistake(db, mistake_id, user.id)
     values = payload.model_dump(exclude_unset=True)
+    _enforce_safe_mistake_input(db, user.id, moderation_text(values), target_id=mistake.id)
     node_id = values.get("knowledge_node_id")
     if node_id is not None:
         if not db.scalar(select(KnowledgeNode.id).where(KnowledgeNode.id == node_id, KnowledgeNode.is_active.is_(True))):
@@ -349,7 +383,7 @@ def get_ocr_task(mistake_id: str, task_id: str, db: DbSession, user: CurrentUser
 @router.post("/{mistake_id}/ocr/{task_id}/cancel", response_model=OcrTaskResponse)
 def cancel_ocr_task(mistake_id: str, task_id: str, db: DbSession, user: CurrentUser) -> OcrTask:
     task = get_ocr_task(mistake_id, task_id, db, user)
-    if task.status in {"succeeded", "failed", "cancelled"}:
+    if task.status in {"succeeded", "failed", "cancelled", "blocked"}:
         raise HTTPException(status_code=409, detail="当前任务状态不能取消")
     task.cancel_requested = True
     if task.status == "queued":
@@ -394,6 +428,7 @@ def confirm_ocr(
     task = get_ocr_task(mistake_id, task_id, db, user)
     if task.status != "succeeded":
         raise HTTPException(status_code=409, detail="OCR 尚未成功完成")
+    _enforce_safe_mistake_input(db, user.id, payload.corrected_text, target_id=mistake.id)
     mistake.corrected_text = payload.corrected_text
     mistake.question_text = payload.corrected_text
     mistake.review_status = "confirmed"
@@ -423,6 +458,12 @@ def analyze_mistake(mistake_id: str, db: DbSession, user: CurrentUser) -> Mistak
         raise HTTPException(status_code=409, detail="请先补充或确认题目文本")
     if any(task.status == "succeeded" and task.requires_review for task in mistake.ocr_tasks) and not mistake.corrected_text:
         raise HTTPException(status_code=409, detail="低置信度 OCR 必须先人工校对")
+    _enforce_safe_mistake_input(
+        db,
+        user.id,
+        moderation_text(question, mistake.student_work, mistake.question_goal),
+        target_id=mistake.id,
+    )
 
     account = db.scalar(
         select(CreditAccount).where(CreditAccount.user_id == user.id).with_for_update()
@@ -473,6 +514,36 @@ def analyze_mistake(mistake_id: str, db: DbSession, user: CurrentUser) -> Mistak
 
     candidate_ids = {node.id for node in nodes}
     analysis = ai_result.analysis
+    output_content = moderation_text(analysis.model_dump())
+    output_decision = moderate_text(output_content)
+    if not output_decision.allowed:
+        db.rollback()
+        record_safety_event(
+            db,
+            user_id=user.id,
+            action="safety.mistake_output_blocked",
+            decision=output_decision,
+            content=output_content,
+            target_type="mistake",
+            target_id=mistake_id,
+        )
+        add_model_call(
+            db,
+            user_id=user.id,
+            feature="mistake_analysis",
+            provider=ai_result.provider,
+            model=ai_result.model,
+            success=False,
+            started_at=model_started_at,
+            error_code="output_safety_blocked",
+            reference_id=mistake_id,
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=422,
+            detail="分析结果触发内容安全保护，未扣除额度。",
+            headers={"X-Content-Safety": "blocked"},
+        )
     if analysis.suggested_node_id not in candidate_ids:
         analysis = analysis.model_copy(
             update={"suggested_node_id": None, "node_confidence": 0, "uncertain": True}
@@ -545,6 +616,12 @@ def create_practice(
     question = payload.question_text or (f"请重新分析并解答这道同类题：\n{source_question}" if source_question else None)
     if not question:
         raise HTTPException(status_code=409, detail="请先补充或确认题目文本")
+    _enforce_safe_mistake_input(
+        db,
+        user.id,
+        moderation_text(question, payload.answer_reference),
+        target_id=mistake.id,
+    )
     practice = MistakePractice(
         mistake_id=mistake.id,
         user_id=user.id,
@@ -707,6 +784,7 @@ def submit_practice(
     )
     if mistake is None:
         raise HTTPException(status_code=404, detail="错题不存在")
+    _enforce_safe_mistake_input(db, user.id, payload.student_answer, target_id=mistake.id)
     practice = db.scalar(
         select(MistakePractice).where(
             MistakePractice.id == practice_id,

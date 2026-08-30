@@ -16,9 +16,31 @@ from app.schemas import (
     LearningSummary,
     LearningSummaryItem,
 )
+from app.services.content_safety import moderate_text, moderation_text, record_safety_event
 
 
 router = APIRouter(prefix="/learning", tags=["学习记录"])
+
+
+def _enforce_safe_learning_input(db: DbSession, user_id: str, content: str, target_id: str | None) -> None:
+    decision = moderate_text(content)
+    if decision.allowed:
+        return
+    record_safety_event(
+        db,
+        user_id=user_id,
+        action="safety.learning_input_blocked",
+        decision=decision,
+        content=content,
+        target_type="knowledge_node",
+        target_id=target_id,
+    )
+    db.commit()
+    raise HTTPException(
+        status_code=422,
+        detail=decision.message,
+        headers={"X-Content-Safety": "blocked"},
+    )
 
 
 def _get_or_create_state(db: DbSession, user_id: str, node_id: str) -> UserKnowledgeState:
@@ -37,6 +59,7 @@ def _get_or_create_state(db: DbSession, user_id: str, node_id: str) -> UserKnowl
 
 @router.post("/events", response_model=LearningEventResponse, status_code=201)
 def create_event(payload: LearningEventCreate, db: DbSession, user: CurrentUser) -> LearningEvent:
+    _enforce_safe_learning_input(db, user.id, moderation_text(payload.event_data), payload.node_id)
     if payload.event_type == "completed_check":
         raise HTTPException(status_code=409, detail="理解检查必须通过专用接口由服务端判分")
     state: UserKnowledgeState | None = None
@@ -187,6 +210,7 @@ def submit_check(
 
 @router.patch("/nodes/{node_id}/state", response_model=LearningSummaryItem)
 def update_state(node_id: str, payload: KnowledgeStateUpdate, db: DbSession, user: CurrentUser) -> LearningSummaryItem:
+    _enforce_safe_learning_input(db, user.id, payload.note or "", node_id)
     node = db.get(KnowledgeNode, node_id)
     if node is None:
         raise HTTPException(status_code=404, detail="知识点不存在")
