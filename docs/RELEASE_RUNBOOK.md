@@ -36,3 +36,11 @@
 - ACME 目录固定为 `/www/wwwroot/qingkui-api-acme`，续期钩子安装在 `/etc/letsencrypt/renewal-hooks/deploy/`。
 - 每次 Nginx 配置变更先执行 `nginx -t`；续期钩子也会先校验配置再重载。
 - 发布验收必须覆盖 HTTP 301、TLS 证书、`/health`、`/docs`、OpenAPI 和一条真实 SSE 问答。
+
+## 限流与模型可观测性
+
+- 生产 API 使用 Redis 固定窗口限流；登录/注册、AI 问答、错题分析和图片上传采用独立阈值。
+- 仅在 Nginx 明确覆盖 `X-Real-IP` 时启用 `RATE_LIMIT_TRUST_PROXY_HEADERS=true`；应用优先使用该头，不信任客户端可伪造的转发链首项。
+- Redis 暂时不可用时请求降级放行并写入结构化错误日志，避免存储故障扩大为全站不可用。
+- `/api/admin/model-costs` 支持 `start_at`、`end_at`、`feature`、`provider` 筛选，展示成功/失败调用、失败率、平均延迟、Token 和额度消耗。
+- 发布回归至少制造一次受控成功调用和一次模拟失败，确认失败调用不扣额度且后台统计可见。

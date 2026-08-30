@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     oss_signed_url_seconds: int = 300
 
     redis_url: str = "redis://redis:6379/0"
+    rate_limit_enabled: bool = False
+    rate_limit_default_per_minute: int = 120
+    rate_limit_auth_per_minute: int = 10
+    rate_limit_ai_per_minute: int = 30
+    rate_limit_upload_per_minute: int = 20
+    rate_limit_trust_proxy_headers: bool = False
     ocr_queue_provider: Literal["local", "redis"] = "local"
     ocr_queue_name: str = "qingkui-ocr"
     ocr_max_attempts: int = 3

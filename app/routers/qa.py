@@ -21,6 +21,7 @@ from app.models import (
 from app.schemas import ConversationCreate, ConversationMessageCreate, ConversationResponse, QaResult
 from app.services.ai import AiStreamState, PROMPT_VERSION, answer_question, stream_answer_text
 from app.services.knowledge import RetrievedChunk, retrieve_chunks, retrieve_nodes
+from app.services.model_calls import add_model_call, start_model_timer
 from app.subjects import normalize_subject, resolve_subject
 
 
@@ -146,10 +147,23 @@ def send_message(
     user_message = Message(conversation_id=conversation.id, role="student", content=payload.content)
     db.add(user_message)
     db.flush()
+    model_started_at = start_model_timer()
     try:
         ai_result = answer_question(payload.content, conversation.mode, payload.help_level, nodes, chunks)
     except RuntimeError as exc:
         db.rollback()
+        add_model_call(
+            db,
+            user_id=user.id,
+            feature=f"qa_{conversation.mode.value}",
+            provider=settings.ai_provider,
+            model=settings.deepseek_model if settings.ai_provider == "deepseek" else "grounded-stub",
+            success=False,
+            started_at=model_started_at,
+            error_code="provider_error",
+            reference_id=conversation.id,
+        )
+        db.commit()
         raise HTTPException(status_code=502, detail="AI 服务暂时不可用，未扣除额度") from exc
 
     citations = _citations(nodes, chunks)
@@ -207,6 +221,18 @@ def send_message(
             model=ai_result.model,
         )
     )
+    add_model_call(
+        db,
+        user_id=user.id,
+        feature=f"qa_{conversation.mode.value}",
+        provider=ai_result.provider,
+        model=ai_result.model,
+        success=True,
+        started_at=model_started_at,
+        input_tokens=ai_result.input_tokens,
+        output_tokens=ai_result.output_tokens,
+        reference_id=assistant_message.id,
+    )
     db.commit()
     db.refresh(user_message)
     db.refresh(assistant_message)
@@ -242,6 +268,7 @@ def _stream_message(session_id: str, user_id: str, payload: ConversationMessageC
         chunks = retrieve_chunks(db, payload.content, subject=subject)
         citations = _citations(nodes, chunks)
         state = AiStreamState()
+        model_started_at = start_model_timer()
         try:
             for chunk in stream_answer_text(
                 payload.content,
@@ -254,6 +281,18 @@ def _stream_message(session_id: str, user_id: str, payload: ConversationMessageC
                 yield _sse("delta", {"content": chunk})
         except RuntimeError:
             db.rollback()
+            add_model_call(
+                db,
+                user_id=user_id,
+                feature=f"qa_{conversation.mode.value}",
+                provider=settings.ai_provider,
+                model=settings.deepseek_model if settings.ai_provider == "deepseek" else "grounded-stub",
+                success=False,
+                started_at=model_started_at,
+                error_code="provider_error",
+                reference_id=conversation.id,
+            )
+            db.commit()
             yield _sse("error", {"status": 502, "detail": "AI 服务暂时不可用，未扣除额度"})
             return
 
@@ -307,6 +346,18 @@ def _stream_message(session_id: str, user_id: str, payload: ConversationMessageC
                 provider=state.provider,
                 model=state.model,
             )
+        )
+        add_model_call(
+            db,
+            user_id=user_id,
+            feature=f"qa_{conversation.mode.value}",
+            provider=state.provider,
+            model=state.model,
+            success=True,
+            started_at=model_started_at,
+            input_tokens=state.input_tokens,
+            output_tokens=state.output_tokens,
+            reference_id=assistant_message.id,
         )
         db.commit()
         db.refresh(user_message)

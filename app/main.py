@@ -6,6 +6,7 @@ from sqlalchemy import text
 
 from app.config import settings
 from app.db import Base, SessionLocal, engine
+from app.rate_limit import RateLimitMiddleware
 from app.routers import admin, auth, credits, feedback, knowledge, learning, mistakes, qa
 from app.schemas import HealthResponse
 from app.seed import seed_demo_content
@@ -27,6 +28,7 @@ app = FastAPI(
     description="青葵计划独立 Android 首版后端",
     lifespan=lifespan,
 )
+app.add_middleware(RateLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,

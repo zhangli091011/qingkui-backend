@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -17,7 +17,7 @@ from app.models import (
     KnowledgeNode,
     KnowledgeNodeVersion,
     KnowledgeSource,
-    Message,
+    ModelCall,
     MistakeAsset,
     MistakeProblem,
     OcrTask,
@@ -595,26 +595,76 @@ def audit_logs(
 
 
 @router.get("/model-costs", response_model=list[ModelCostResponse])
-def model_costs(db: DbSession, _admin: AdminUser, limit: int = Query(default=100, ge=1, le=500)) -> list[dict]:
-    message_rows = db.execute(
-        select(Message.provider, Message.model, func.count(Message.id), func.coalesce(func.sum(Message.input_tokens), 0), func.coalesce(func.sum(Message.output_tokens), 0))
-        .where(Message.role == "assistant")
-        .group_by(Message.provider, Message.model)
+def model_costs(
+    db: DbSession,
+    _admin: AdminUser,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
+    feature: str | None = Query(default=None, max_length=40),
+    provider: str | None = Query(default=None, max_length=40),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> list[dict]:
+    filters = []
+    if start_at:
+        filters.append(ModelCall.created_at >= start_at)
+    if end_at:
+        filters.append(ModelCall.created_at < end_at)
+    if feature:
+        filters.append(ModelCall.feature == feature)
+    if provider:
+        filters.append(ModelCall.provider == provider)
+    rows = db.execute(
+        select(
+            ModelCall.provider,
+            ModelCall.model,
+            func.count(ModelCall.id),
+            func.coalesce(func.sum(case((ModelCall.success.is_(True), 1), else_=0)), 0),
+            func.coalesce(func.sum(case((ModelCall.success.is_(False), 1), else_=0)), 0),
+            func.coalesce(func.sum(ModelCall.input_tokens), 0),
+            func.coalesce(func.sum(ModelCall.output_tokens), 0),
+            func.coalesce(func.avg(ModelCall.latency_ms), 0),
+        )
+        .where(*filters)
+        .group_by(ModelCall.provider, ModelCall.model)
+        .order_by(func.count(ModelCall.id).desc())
+        .limit(limit)
     ).all()
-    credit_rows = db.execute(
-        select(CreditLedger.provider, CreditLedger.model, func.coalesce(func.sum(CreditLedger.amount), 0))
-        .where(CreditLedger.entry_type == "qa_charge")
-        .group_by(CreditLedger.provider, CreditLedger.model)
-    ).all()
-    credits = {(provider, model): abs(int(amount or 0)) for provider, model, amount in credit_rows}
-    aggregates = {
-        (provider, model): {"provider": provider, "model": model, "calls": int(calls), "input_tokens": int(input_tokens or 0), "output_tokens": int(output_tokens or 0), "credits": 0}
-        for provider, model, calls, input_tokens, output_tokens in message_rows
+    credit_filters = [CreditLedger.entry_type.in_(("qa_charge", "mistake_analysis_charge"))]
+    if start_at:
+        credit_filters.append(CreditLedger.created_at >= start_at)
+    if end_at:
+        credit_filters.append(CreditLedger.created_at < end_at)
+    if feature:
+        credit_filters.append(CreditLedger.feature == feature)
+    if provider:
+        credit_filters.append(CreditLedger.provider == provider)
+    credits = {
+        (row_provider, row_model): abs(int(amount or 0))
+        for row_provider, row_model, amount in db.execute(
+            select(
+                CreditLedger.provider,
+                CreditLedger.model,
+                func.coalesce(func.sum(CreditLedger.amount), 0),
+            )
+            .where(*credit_filters)
+            .group_by(CreditLedger.provider, CreditLedger.model)
+        )
     }
-    for key, amount in credits.items():
-        aggregates.setdefault(key, {"provider": key[0], "model": key[1], "calls": 0, "input_tokens": 0, "output_tokens": 0, "credits": 0})["credits"] = amount
-    result = list(aggregates.values())
-    return result[:limit]
+    return [
+        {
+            "provider": row_provider,
+            "model": row_model,
+            "calls": int(calls),
+            "successful_calls": int(successful),
+            "failed_calls": int(failed),
+            "failure_rate": round(int(failed) / int(calls), 4) if calls else 0,
+            "average_latency_ms": round(float(average_latency or 0), 1),
+            "input_tokens": int(input_tokens or 0),
+            "output_tokens": int(output_tokens or 0),
+            "credits": credits.get((row_provider, row_model), 0),
+        }
+        for row_provider, row_model, calls, successful, failed, input_tokens, output_tokens, average_latency in rows
+    ]
 
 
 @router.get("/users", response_model=list[AdminUserResponse])

@@ -588,6 +588,10 @@ class ModelCostResponse(BaseModel):
     input_tokens: int
     output_tokens: int
     credits: int
+    successful_calls: int = 0
+    failed_calls: int = 0
+    failure_rate: float = 0
+    average_latency_ms: float = 0
 
 
 class AdminCreditAdjustment(BaseModel):

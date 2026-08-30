@@ -36,6 +36,7 @@ from app.services.knowledge import retrieve_chunks, retrieve_nodes
 from app.services.mistake_analysis import PROMPT_VERSION as ANALYSIS_PROMPT_VERSION
 from app.services.mistake_analysis import analyze_mistake_content
 from app.services.mistakes import delete_assets, enqueue_ocr_task, store_mistake_image
+from app.services.model_calls import add_model_call, start_model_timer
 from app.services.object_storage import delete_private_object, get_private_bytes
 from app.services.practice_validation import validate_practice_answer
 
@@ -331,6 +332,7 @@ def analyze_mistake(mistake_id: str, db: DbSession, user: CurrentUser) -> Mistak
     chunks = retrieve_chunks(db, question, limit=8, subject=mistake.subject)
     mistake.analysis_status = "processing"
     db.flush()
+    model_started_at = start_model_timer()
     try:
         ai_result = analyze_mistake_content(
             question=question,
@@ -341,6 +343,18 @@ def analyze_mistake(mistake_id: str, db: DbSession, user: CurrentUser) -> Mistak
         )
     except RuntimeError as exc:
         db.rollback()
+        add_model_call(
+            db,
+            user_id=user.id,
+            feature="mistake_analysis",
+            provider=settings.ai_provider,
+            model=settings.deepseek_model if settings.ai_provider == "deepseek" else "grounded-stub",
+            success=False,
+            started_at=model_started_at,
+            error_code="provider_error",
+            reference_id=mistake.id,
+        )
+        db.commit()
         raise HTTPException(status_code=502, detail="错题分析服务暂时不可用，未扣除额度") from exc
 
     candidate_ids = {node.id for node in nodes}
@@ -384,6 +398,18 @@ def analyze_mistake(mistake_id: str, db: DbSession, user: CurrentUser) -> Mistak
                 "node_confidence": analysis.node_confidence,
             },
         )
+    )
+    add_model_call(
+        db,
+        user_id=user.id,
+        feature="mistake_analysis",
+        provider=ai_result.provider,
+        model=ai_result.model,
+        success=True,
+        started_at=model_started_at,
+        input_tokens=ai_result.input_tokens,
+        output_tokens=ai_result.output_tokens,
+        reference_id=mistake.id,
     )
     db.commit()
     return MistakeAnalysisResponse(
