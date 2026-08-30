@@ -11,6 +11,7 @@ from app.models import (
     Conversation,
     CreditAccount,
     CreditLedger,
+    CreditRedemption,
     FeedbackSubmission,
     IdempotencyRequest,
     KnowledgeNodeVersion,
@@ -38,6 +39,7 @@ def erase_user_account(db: Session, user: User, *, delete_external_assets: bool 
     db.execute(delete(UserKnowledgeState).where(UserKnowledgeState.user_id == user_id))
     db.execute(delete(LearningEvent).where(LearningEvent.user_id == user_id))
     db.execute(delete(CreditLedger).where(CreditLedger.user_id == user_id))
+    db.execute(delete(CreditRedemption).where(CreditRedemption.user_id == user_id))
     db.execute(delete(CreditAccount).where(CreditAccount.user_id == user_id))
     db.execute(delete(RefreshSession).where(RefreshSession.user_id == user_id))
     db.execute(delete(IdempotencyRequest).where(IdempotencyRequest.user_id == user_id))

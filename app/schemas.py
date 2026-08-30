@@ -438,6 +438,47 @@ class CreditLedgerResponse(ApiModel):
     created_at: datetime
 
 
+class CreditCampaignCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    amount: int = Field(ge=1, le=100_000)
+    school_id: str | None = Field(default=None, max_length=36)
+    starts_at: datetime | None = None
+    expires_hours: int = Field(default=24 * 30, ge=1, le=24 * 365)
+    max_redemptions: int = Field(ge=1, le=100_000)
+    per_user_limit: int = Field(default=1, ge=1, le=100)
+    code_count: int = Field(default=1, ge=1, le=1000)
+    code_max_uses: int = Field(default=1, ge=1, le=100_000)
+
+
+class CreditCampaignResponse(ApiModel):
+    id: str
+    name: str
+    amount: int
+    school_id: str | None
+    status: str
+    starts_at: datetime
+    ends_at: datetime
+    max_redemptions: int
+    redemption_count: int
+    per_user_limit: int
+    created_at: datetime
+
+
+class CreditCampaignCreatedResponse(CreditCampaignResponse):
+    codes: list[str]
+
+
+class CreditRedeemRequest(BaseModel):
+    code: str = Field(min_length=8, max_length=128)
+
+
+class CreditRedeemResponse(BaseModel):
+    campaign_id: str
+    campaign_name: str
+    amount: int
+    balance: int
+
+
 class FeedbackCreate(BaseModel):
     category: str = Field(pattern=r"^(content_error|relation_error|answer_error|version_outdated|product_issue|other)$")
     content: str = Field(min_length=2, max_length=4000)

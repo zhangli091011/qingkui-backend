@@ -78,6 +78,7 @@ class Settings(BaseSettings):
     user_upload_max_pixels: int = 20_000_000
     organizations_enabled: bool = False
     idempotency_retention_hours: int = 24
+    credit_campaigns_enabled: bool = False
 
     @field_validator("cors_origins", mode="before")
     @classmethod
