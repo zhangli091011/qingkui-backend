@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     operational_model_latency_threshold_ms: int = 30_000
     operational_ocr_failed_threshold: int = 3
     operational_ocr_stuck_minutes: int = 10
+    operational_alert_webhook_url: str | None = None
+    operational_alert_webhook_timeout_seconds: float = 5.0
+    operational_alert_cooldown_minutes: int = 60
     ocr_queue_provider: Literal["local", "redis"] = "local"
     ocr_queue_name: str = "qingkui-ocr"
     ocr_max_attempts: int = 3

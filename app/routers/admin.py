@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import case, func, or_, select, update
@@ -70,6 +70,7 @@ from app.schemas import (
 )
 from app.services.content_governance import graph_integrity_report, governance_report, node_publication_blockers
 from app.services.mistakes import delete_assets, enqueue_ocr_task
+from app.services.operational_alerts import build_operational_alert_summary
 from app.services.pilot import anonymous_user_id, build_pilot_report
 from app.services.user_lifecycle import erase_user_account
 
@@ -905,102 +906,7 @@ def model_costs(
 
 @router.get("/operational-alerts", response_model=OperationalAlertSummary)
 def operational_alerts(db: DbSession, _admin: AdminUser) -> dict:
-    now = datetime.now(timezone.utc)
-    window_start = now - timedelta(minutes=max(1, settings.operational_alert_window_minutes))
-    calls, failed_calls, average_latency = db.execute(
-        select(
-            func.count(ModelCall.id),
-            func.sum(case((ModelCall.success.is_(False), 1), else_=0)),
-            func.avg(ModelCall.latency_ms),
-        ).where(ModelCall.created_at >= window_start)
-    ).one()
-    calls = int(calls or 0)
-    failed_calls = int(failed_calls or 0)
-    average_latency = float(average_latency or 0)
-    failure_rate = failed_calls / calls if calls else 0.0
-
-    stuck_before = now - timedelta(minutes=max(1, settings.operational_ocr_stuck_minutes))
-    stuck_ocr = db.scalar(
-        select(func.count(OcrTask.id)).where(
-            OcrTask.status.in_(("queued", "recognizing")),
-            func.coalesce(OcrTask.started_at, OcrTask.queued_at, OcrTask.created_at) <= stuck_before,
-        )
-    ) or 0
-    failed_ocr = db.scalar(
-        select(func.count(OcrTask.id)).where(
-            OcrTask.status == "failed",
-            OcrTask.updated_at >= window_start,
-        )
-    ) or 0
-    active_ocr = db.scalar(
-        select(func.count(OcrTask.id)).where(OcrTask.status.in_(("queued", "recognizing")))
-    ) or 0
-
-    alerts: list[dict] = []
-    if (
-        calls >= settings.operational_model_failure_min_calls
-        and failed_calls > 0
-        and failure_rate >= settings.operational_model_failure_rate_threshold
-    ):
-        alerts.append(
-            {
-                "severity": "critical",
-                "code": "model_failure_rate",
-                "message": "最近模型调用失败率超过阈值",
-                "value": round(failure_rate, 4),
-                "threshold": settings.operational_model_failure_rate_threshold,
-            }
-        )
-    if calls and average_latency >= settings.operational_model_latency_threshold_ms:
-        alerts.append(
-            {
-                "severity": "warning",
-                "code": "model_latency",
-                "message": "最近模型调用平均延迟超过阈值",
-                "value": round(average_latency, 2),
-                "threshold": float(settings.operational_model_latency_threshold_ms),
-            }
-        )
-    if failed_ocr >= settings.operational_ocr_failed_threshold:
-        alerts.append(
-            {
-                "severity": "warning",
-                "code": "ocr_failures",
-                "message": "最近 OCR 失败任务数量超过阈值",
-                "value": float(failed_ocr),
-                "threshold": float(settings.operational_ocr_failed_threshold),
-            }
-        )
-    if stuck_ocr:
-        alerts.append(
-            {
-                "severity": "critical",
-                "code": "ocr_stuck",
-                "message": "存在长时间未完成的 OCR 任务",
-                "value": float(stuck_ocr),
-                "threshold": 0.0,
-            }
-        )
-    status = (
-        "critical"
-        if any(item["severity"] == "critical" for item in alerts)
-        else "warning" if alerts else "ok"
-    )
-    return {
-        "status": status,
-        "generated_at": now,
-        "window_start": window_start,
-        "metrics": {
-            "model_calls": calls,
-            "model_failed_calls": failed_calls,
-            "model_failure_rate": round(failure_rate, 4),
-            "model_average_latency_ms": round(average_latency, 2),
-            "ocr_active_tasks": int(active_ocr),
-            "ocr_failed_tasks": int(failed_ocr),
-            "ocr_stuck_tasks": int(stuck_ocr),
-        },
-        "alerts": alerts,
-    }
+    return build_operational_alert_summary(db)
 
 
 @router.get("/pilot/metrics", response_model=PilotMetricsResponse)

@@ -269,6 +269,26 @@ def import_wikibooks_content(pages_per_topic: int) -> None:
     )
 
 
+def notify_operational_alerts_file(*, dry_run: bool) -> None:
+    from app.config import settings
+    from app.services.operational_alerts import (
+        build_operational_alert_summary,
+        notify_operational_alerts,
+        webhook_payload,
+    )
+
+    Base.metadata.create_all(bind=engine)
+    with SessionLocal() as db:
+        summary = build_operational_alert_summary(db)
+    if dry_run:
+        result = "dry_run"
+    else:
+        if not settings.operational_alert_webhook_url:
+            raise SystemExit("OPERATIONAL_ALERT_WEBHOOK_URL is not configured")
+        result = notify_operational_alerts(summary, webhook_url=settings.operational_alert_webhook_url)
+    print(json.dumps({"notification": result, "payload": webhook_payload(summary)}, ensure_ascii=False, indent=2))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -340,6 +360,11 @@ def main() -> None:
     review_packet_command.add_argument("--limit", type=int, default=600)
     wikibooks_command = subparsers.add_parser("import-wikibooks")
     wikibooks_command.add_argument("--pages-per-topic", type=int, default=6, choices=range(1, 11))
+    alert_command = subparsers.add_parser(
+        "operational-alert-notify",
+        help="send active model/OCR alerts to the configured webhook",
+    )
+    alert_command.add_argument("--dry-run", action="store_true")
     qa_command = subparsers.add_parser("qa-console", help="interactive streaming AI QA tester")
     qa_command.add_argument("--mode", choices=("knowledge", "problem", "error", "review", "explore", "verify"), default="knowledge")
     qa_command.add_argument("--help-level", choices=("keyword", "next_step", "approach", "full", "conclusion"), default="approach")
@@ -416,6 +441,8 @@ def main() -> None:
         )
     elif args.command == "import-wikibooks":
         import_wikibooks_content(args.pages_per_topic)
+    elif args.command == "operational-alert-notify":
+        notify_operational_alerts_file(dry_run=args.dry_run)
     elif args.command == "qa-console":
         from app.interactive_qa import ConsoleState, HELP_NAMES, MODE_NAMES, _run_question, run_console
 
