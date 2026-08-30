@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
@@ -270,6 +270,7 @@ class MistakeCreate(BaseModel):
     question_text: str | None = Field(default=None, max_length=12000)
     student_work: str | None = Field(default=None, max_length=12000)
     question_goal: str | None = Field(default=None, max_length=1000)
+    error_category: str | None = Field(default=None, pattern=r"^(concept|reading|method|calculation|expression)$")
 
 
 class MistakeUpdate(BaseModel):
@@ -313,7 +314,10 @@ class OcrTaskResponse(ApiModel):
 
 class MistakePracticeResponse(ApiModel):
     id: str
+    round_id: str | None
+    position: int | None
     question_text: str
+    hint: str | None
     answer_reference: str | None
     source: str
     status: str
@@ -322,6 +326,19 @@ class MistakePracticeResponse(ApiModel):
     validation_details: dict
     created_at: datetime
     completed_at: datetime | None
+
+
+class MistakePracticeRoundResponse(ApiModel):
+    id: str
+    round_number: int
+    review_stage: str
+    status: str
+    question_count: int
+    correct_count: int
+    authoritative_correct_count: int
+    started_at: datetime
+    completed_at: datetime | None
+    practices: list[MistakePracticeResponse] = Field(default_factory=list)
 
 
 class MistakeResponse(ApiModel):
@@ -344,11 +361,17 @@ class MistakeResponse(ApiModel):
     study_status: str
     next_review_at: datetime | None
     attempt_count: int
+    review_stage: str
+    first_corrected_at: datetime | None
+    last_reviewed_at: datetime | None
+    second_attempt_correct: bool | None
+    review_streak: int
     created_at: datetime
     updated_at: datetime
     assets: list[MistakeAssetResponse] = Field(default_factory=list)
     ocr_tasks: list[OcrTaskResponse] = Field(default_factory=list)
     practices: list[MistakePracticeResponse] = Field(default_factory=list)
+    practice_rounds: list[MistakePracticeRoundResponse] = Field(default_factory=list)
 
 
 class OcrCorrection(BaseModel):
@@ -366,6 +389,12 @@ class PracticeSubmit(BaseModel):
     validation_details: dict = Field(default_factory=dict)
 
 
+class SimilarPracticeData(BaseModel):
+    question: str = Field(min_length=1, max_length=12000)
+    hint: str = Field(min_length=1, max_length=2000)
+    answer_reference: str = Field(min_length=1, max_length=12000)
+
+
 class MistakeAnalysisData(BaseModel):
     diagnosis: str = Field(min_length=1, max_length=4000)
     error_category: str = Field(pattern=r"^(concept|reading|method|calculation|expression)$")
@@ -375,6 +404,7 @@ class MistakeAnalysisData(BaseModel):
     node_confidence: float = Field(default=0, ge=0, le=1)
     similar_question: str = Field(min_length=1, max_length=12000)
     answer_reference: str = Field(min_length=1, max_length=12000)
+    similar_practices: list[SimilarPracticeData] = Field(default_factory=list, max_length=3)
     uncertain: bool = False
 
 
@@ -385,6 +415,28 @@ class MistakeAnalysisResponse(BaseModel):
     balance: int
     provider: str
     model: str
+
+
+class WeeklyMistakeLink(BaseModel):
+    mistake_id: str
+    practice_round_id: str | None = None
+    knowledge_node_id: str | None = None
+    title: str
+    review_stage: str
+    next_review_at: datetime | None = None
+
+
+class MistakeWeeklyReview(BaseModel):
+    week_start: date
+    week_end: date
+    new_mistakes: int
+    error_categories: dict[str, int]
+    weak_knowledge_points: list[dict]
+    due_reviews: list[WeeklyMistakeLink]
+    practice_completion_rate: float
+    authoritative_accuracy: float
+    second_attempt_accuracy: float
+    seven_day_followup_rate: float
 
 
 class ConversationCreate(BaseModel):

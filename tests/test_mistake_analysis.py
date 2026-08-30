@@ -1,5 +1,8 @@
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
+from app.db import SessionLocal
+from app.models import MistakeProblem
 from app.services.practice_validation import validate_practice_answer
 
 
@@ -18,7 +21,7 @@ def _create(client: TestClient, headers: dict[str, str], *, suffix: str = "") ->
     return response.json()
 
 
-def test_analysis_is_grounded_charged_once_and_generates_one_practice(client: TestClient, account) -> None:
+def test_analysis_is_grounded_charged_once_and_generates_idempotent_round(client: TestClient, account) -> None:
     _, headers = account
     mistake = _create(client, headers, suffix="（分析）")
     before = client.get("/api/credits", headers=headers).json()["balance"]
@@ -46,10 +49,15 @@ def test_analysis_is_grounded_charged_once_and_generates_one_practice(client: Te
     assert first.status_code == 201
     assert second.status_code == 201
     assert first.json()["id"] == second.json()["id"]
+    assert first.json()["review_stage"] == "correction"
+    assert first.json()["question_count"] == 3
+    assert len(first.json()["practices"]) == 3
+    assert all(item["hint"] for item in first.json()["practices"])
     detail = client.get(f"/api/mistakes/{mistake['id']}", headers=headers).json()
     assert detail["analysis_status"] == "completed"
     assert detail["analysis"]["similar_question"]
-    assert len(detail["practices"]) == 1
+    assert len(detail["practices"]) == 3
+    assert len(detail["practice_rounds"]) == 1
 
 
 def test_editing_source_content_invalidates_analysis(client: TestClient, account) -> None:
@@ -89,7 +97,7 @@ def test_analysis_failure_does_not_charge_and_is_cross_user_private(client: Test
     assert client.post(f"/api/mistakes/{mistake['id']}/analyze", headers=other_headers).status_code == 404
 
 
-def test_server_numeric_validation_overrides_client_and_controls_mastery(client: TestClient, account) -> None:
+def test_server_numeric_validation_overrides_client_and_schedules_review(client: TestClient, account) -> None:
     _, headers = account
     mistake = _create(client, headers, suffix="（校验）")
     linked = client.patch(
@@ -115,9 +123,98 @@ def test_server_numeric_validation_overrides_client_and_controls_mastery(client:
     assert result["validation_details"]["method"] == "numeric_expression"
     assert result["validation_details"]["authoritative"] is True
     assert result["validation_details"]["client"] == {"claimed": "wrong"}
-    assert client.get(f"/api/mistakes/{mistake['id']}", headers=headers).json()["study_status"] == "mastered"
+    detail = client.get(f"/api/mistakes/{mistake['id']}", headers=headers).json()
+    assert detail["study_status"] == "reviewing"
+    assert detail["review_stage"] == "next_day"
+    assert detail["next_review_at"] is not None
+    summary = client.get("/api/learning/summary", headers=headers).json()
+    assert not any(item["id"] == "quadratic_function" for item in summary["verified"])
+
+
+def test_three_stage_rounds_require_authoritative_answers_before_mastery(client: TestClient, account) -> None:
+    _, headers = account
+    mistake = _create(client, headers, suffix="（三阶段）")
+    assert client.patch(
+        f"/api/mistakes/{mistake['id']}",
+        json={"knowledge_node_id": "quadratic_function"},
+        headers=headers,
+    ).status_code == 200
+    assert client.post(f"/api/mistakes/{mistake['id']}/analyze", headers=headers).status_code == 200
+    with SessionLocal() as db:
+        row = db.scalar(select(MistakeProblem).where(MistakeProblem.id == mistake["id"]))
+        row.analysis = {
+            **row.analysis,
+            "similar_practices": [
+                {"question": "计算 2+2", "hint": "直接计算", "answer_reference": "答案：4"},
+                {"question": "计算 1+3", "hint": "合并整数", "answer_reference": "答案：4"},
+                {"question": "计算 8/2", "hint": "先做除法", "answer_reference": "答案：4"},
+            ],
+        }
+        db.commit()
+
+    stage_expectations = [
+        ("correction", "next_day", "reviewing"),
+        ("next_day", "next_week", "reviewing"),
+        ("next_week", "completed", "mastered"),
+    ]
+    for expected_stage, next_stage, status in stage_expectations:
+        with SessionLocal() as db:
+            row = db.scalar(select(MistakeProblem).where(MistakeProblem.id == mistake["id"]))
+            row.next_review_at = None
+            db.commit()
+        generated = client.post(f"/api/mistakes/{mistake['id']}/practices/generate", headers=headers)
+        assert generated.status_code == 201, generated.text
+        assert generated.json()["review_stage"] == expected_stage
+        for practice in generated.json()["practices"]:
+            submitted = client.post(
+                f"/api/mistakes/{mistake['id']}/practices/{practice['id']}/submit",
+                json={"student_answer": "4", "is_correct": False},
+                headers=headers,
+            )
+            assert submitted.status_code == 200, submitted.text
+        repeated = client.post(
+            f"/api/mistakes/{mistake['id']}/practices/{generated.json()['practices'][0]['id']}/submit",
+            json={"student_answer": "4"},
+            headers=headers,
+        )
+        assert repeated.status_code == 409
+        detail = client.get(f"/api/mistakes/{mistake['id']}", headers=headers).json()
+        assert detail["review_stage"] == next_stage
+        assert detail["study_status"] == status
+
+    assert detail["second_attempt_correct"] is True
+    assert detail["review_streak"] == 3
+    assert detail["next_review_at"] is None
     summary = client.get("/api/learning/summary", headers=headers).json()
     assert any(item["id"] == "quadratic_function" for item in summary["verified"])
+
+    weekly = client.get("/api/mistakes/review/weekly", headers=headers)
+    assert weekly.status_code == 200, weekly.text
+    assert weekly.json()["practice_completion_rate"] > 0
+    assert weekly.json()["authoritative_accuracy"] == 1.0
+    assert weekly.json()["second_attempt_accuracy"] == 1.0
+
+
+def test_practice_rounds_and_weekly_review_are_cross_user_private(client: TestClient, account) -> None:
+    _, headers = account
+    mistake = _create(client, headers, suffix="（权限）")
+    assert client.post(f"/api/mistakes/{mistake['id']}/analyze", headers=headers).status_code == 200
+    practice_round = client.post(f"/api/mistakes/{mistake['id']}/practices/generate", headers=headers)
+    assert practice_round.status_code == 201
+
+    other = client.post(
+        "/api/auth/register",
+        json={"username": "practice_other_01", "password": "practice-pass-123", "nickname": "另一位同学"},
+    )
+    other_headers = {"Authorization": f"Bearer {other.json()['access_token']}"}
+    assert client.get(f"/api/mistakes/{mistake['id']}", headers=other_headers).status_code == 404
+    assert client.post(
+        f"/api/mistakes/{mistake['id']}/practices/generate", headers=other_headers
+    ).status_code == 404
+    other_weekly = client.get("/api/mistakes/review/weekly", headers=other_headers)
+    assert other_weekly.status_code == 200
+    assert other_weekly.json()["new_mistakes"] == 0
+    assert other_weekly.json()["due_reviews"] == []
 
 
 def test_non_numeric_self_report_never_counts_as_verified_mastery(client: TestClient, account) -> None:

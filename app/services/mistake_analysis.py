@@ -8,7 +8,7 @@ import httpx
 
 from app.config import settings
 from app.models import KnowledgeNode
-from app.schemas import MistakeAnalysisData
+from app.schemas import MistakeAnalysisData, SimilarPracticeData
 from app.services.knowledge import RetrievedChunk
 
 
@@ -35,6 +35,23 @@ def _stub_analysis(question: str, nodes: list[KnowledgeNode]) -> MistakeAnalysis
         node_confidence=0.7 if suggested else 0,
         similar_question=f"请使用相同方法重新分析这道变式题：{question}",
         answer_reference="按已知条件列式，完成推导后检查定义域、符号与最终结论。",
+        similar_practices=[
+            SimilarPracticeData(
+                question=f"变式一：请使用相同方法重新分析：{question}",
+                hint="先整理已知条件，再判断应使用的公式或定理。",
+                answer_reference="按已知条件列式，逐步推导并检查定义域、符号与结论。",
+            ),
+            SimilarPracticeData(
+                question=f"变式二：改变解题顺序后重新完成：{question}",
+                hint="尝试从目标倒推需要满足的中间条件。",
+                answer_reference="从目标所需条件倒推，再用题目已知量完成验证。",
+            ),
+            SimilarPracticeData(
+                question=f"变式三：写出完整检验过程并解答：{question}",
+                hint="完成计算后单独检查边界条件和特殊值。",
+                answer_reference="列式求解后验证边界、特殊值及最终答案是否满足原题。",
+            ),
+        ],
         uncertain=not bool(nodes),
     )
 
@@ -86,8 +103,10 @@ def analyze_mistake_content(
 只根据题目、学生过程和已给出的知识候选分析，不得编造学生没有写出的步骤。学生过程不足时明确 uncertain=true。
 错误类型必须且只能是 concept、reading、method、calculation、expression 之一。
 suggested_node_id 只能从下列候选 ID 中选择；不可靠时必须为 null，node_confidence 取 0 到 1。
-生成一道考查同一方法但数值或情境不同的练习，并给出可核验的 answer_reference。
+生成三道考查同一方法但数值或情境不同、彼此不重复的练习。similar_practices 必须是恰好 3 项的数组，每项固定包含 question、hint、answer_reference，答案必须可核验。
+同时将第一项的 question 和 answer_reference 分别复制到 similar_question、answer_reference，以兼容旧客户端。
 correction_steps 最多 6 条。只输出 JSON 对象，字段固定为 diagnosis、error_category、error_note、correction_steps、suggested_node_id、node_confidence、similar_question、answer_reference、uncertain。
+输出字段还必须包含 similar_practices。
 
 <knowledge_candidates>
 {candidates}
@@ -125,6 +144,8 @@ correction_steps 最多 6 条。只输出 JSON 对象，字段固定为 diagnosi
             response.raise_for_status()
             body = response.json()
             analysis = _parse_analysis(body["choices"][0]["message"]["content"])
+            if len(analysis.similar_practices) < 2:
+                raise ValueError("Mistake analysis returned fewer than two practices")
             usage = body.get("usage") or {}
             return MistakeAnalysisAiResult(
                 analysis=analysis,

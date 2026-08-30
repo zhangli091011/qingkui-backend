@@ -1,8 +1,11 @@
-from datetime import datetime, timezone
+import re
+from collections import Counter
+from datetime import date, datetime, time, timedelta, timezone
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
@@ -16,6 +19,7 @@ from app.models import (
     LearningEvent,
     MistakeAsset,
     MistakePractice,
+    MistakePracticeRound,
     MistakeProblem,
     OcrTask,
     UserKnowledgeState,
@@ -27,12 +31,15 @@ from app.schemas import (
     MistakeAnalysisData,
     MistakeAnalysisResponse,
     MistakePracticeResponse,
+    MistakePracticeRoundResponse,
     MistakeResponse,
+    MistakeWeeklyReview,
     MistakeUpdate,
     OcrCorrection,
     OcrTaskResponse,
     PracticeCreate,
     PracticeSubmit,
+    WeeklyMistakeLink,
 )
 from app.services.knowledge import retrieve_chunks, retrieve_nodes
 from app.services.mistake_analysis import PROMPT_VERSION as ANALYSIS_PROMPT_VERSION
@@ -46,6 +53,14 @@ from app.services.practice_validation import validate_practice_answer
 router = APIRouter(prefix="/mistakes", tags=["错题本"])
 
 
+def _utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
+def _round_loader():
+    return selectinload(MistakeProblem.practice_rounds).selectinload(MistakePracticeRound.practices)
+
+
 def _owned_mistake(db: DbSession, mistake_id: str, user_id: str, *, detail: bool = False) -> MistakeProblem:
     query = select(MistakeProblem).where(MistakeProblem.id == mistake_id, MistakeProblem.user_id == user_id)
     if detail:
@@ -53,6 +68,7 @@ def _owned_mistake(db: DbSession, mistake_id: str, user_id: str, *, detail: bool
             selectinload(MistakeProblem.assets),
             selectinload(MistakeProblem.ocr_tasks),
             selectinload(MistakeProblem.practices),
+            _round_loader(),
         )
     mistake = db.scalar(query)
     if mistake is None:
@@ -87,6 +103,7 @@ def list_mistakes(
             selectinload(MistakeProblem.assets),
             selectinload(MistakeProblem.ocr_tasks),
             selectinload(MistakeProblem.practices),
+            _round_loader(),
         )
         .order_by(MistakeProblem.updated_at.desc())
         .limit(limit)
@@ -96,6 +113,101 @@ def list_mistakes(
     if study_status:
         query = query.where(MistakeProblem.study_status == study_status)
     return list(db.scalars(query))
+
+
+@router.get("/review/weekly", response_model=MistakeWeeklyReview)
+def weekly_review(
+    db: DbSession,
+    user: CurrentUser,
+    week_start: date | None = None,
+) -> MistakeWeeklyReview:
+    today = datetime.now(timezone.utc).date()
+    start_date = week_start or (today - timedelta(days=today.weekday()))
+    end_date = start_date + timedelta(days=7)
+    start_at = datetime.combine(start_date, time.min, tzinfo=timezone.utc)
+    end_at = datetime.combine(end_date, time.min, tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+
+    mistakes = list(db.scalars(select(MistakeProblem).where(MistakeProblem.user_id == user.id)))
+    rounds = list(
+        db.scalars(
+            select(MistakePracticeRound)
+            .where(MistakePracticeRound.user_id == user.id)
+            .options(selectinload(MistakePracticeRound.practices))
+        )
+    )
+    new_items = [item for item in mistakes if start_at <= _utc(item.created_at) < end_at]
+    category_counts = Counter(item.error_category or "unclassified" for item in new_items)
+    weak_counts = Counter(
+        item.knowledge_node_id
+        for item in mistakes
+        if item.study_status != "mastered" and item.knowledge_node_id
+    )
+    weak_nodes = []
+    if weak_counts:
+        names = dict(
+            db.execute(
+                select(KnowledgeNode.id, KnowledgeNode.name).where(KnowledgeNode.id.in_(weak_counts.keys()))
+            ).all()
+        )
+        weak_nodes = [
+            {"knowledge_node_id": node_id, "name": names.get(node_id, node_id), "mistake_count": count}
+            for node_id, count in weak_counts.most_common(5)
+        ]
+
+    active_rounds = {item.mistake_id: item for item in rounds if item.status == "active"}
+    due_items = [
+        item
+        for item in mistakes
+        if item.study_status != "mastered"
+        and item.next_review_at is not None
+        and _utc(item.next_review_at) <= now
+    ]
+    due_links = [
+        WeeklyMistakeLink(
+            mistake_id=item.id,
+            practice_round_id=active_rounds.get(item.id).id if active_rounds.get(item.id) else None,
+            knowledge_node_id=item.knowledge_node_id,
+            title=(item.corrected_text or item.question_text or "图片错题")[:120],
+            review_stage=item.review_stage,
+            next_review_at=item.next_review_at,
+        )
+        for item in sorted(due_items, key=lambda value: _utc(value.next_review_at))
+    ]
+
+    weekly_rounds = [item for item in rounds if start_at <= _utc(item.started_at) < end_at]
+    completed = [item for item in weekly_rounds if item.status == "completed"]
+    submitted = [practice for item in weekly_rounds for practice in item.practices if practice.status == "completed"]
+    authoritative = [practice for practice in submitted if practice.validation_details.get("authoritative") is True]
+    second_attempts = [
+        item for item in mistakes
+        if item.second_attempt_correct is not None and item.last_reviewed_at and start_at <= _utc(item.last_reviewed_at) < end_at
+    ]
+    eligible_followups = [
+        item for item in mistakes
+        if item.first_corrected_at is not None and _utc(item.first_corrected_at) <= min(now, end_at) - timedelta(days=7)
+    ]
+    next_week_completed_ids = {
+        item.mistake_id for item in rounds if item.review_stage == "next_week" and item.status == "completed"
+    }
+
+    def ratio(numerator: int, denominator: int) -> float:
+        return round(numerator / denominator, 4) if denominator else 0.0
+
+    return MistakeWeeklyReview(
+        week_start=start_date,
+        week_end=end_date,
+        new_mistakes=len(new_items),
+        error_categories=dict(category_counts),
+        weak_knowledge_points=weak_nodes,
+        due_reviews=due_links,
+        practice_completion_rate=ratio(len(completed), len(weekly_rounds)),
+        authoritative_accuracy=ratio(sum(item.is_correct is True for item in authoritative), len(authoritative)),
+        second_attempt_accuracy=ratio(sum(item.second_attempt_correct is True for item in second_attempts), len(second_attempts)),
+        seven_day_followup_rate=ratio(
+            sum(item.id in next_week_completed_ids for item in eligible_followups), len(eligible_followups)
+        ),
+    )
 
 
 @router.get("/{mistake_id}", response_model=MistakeResponse)
@@ -446,38 +558,138 @@ def create_practice(
     return practice
 
 
-@router.post("/{mistake_id}/practices/generate", response_model=MistakePracticeResponse, status_code=201)
-def generate_practice(mistake_id: str, db: DbSession, user: CurrentUser) -> MistakePractice:
-    mistake = _owned_mistake(db, mistake_id, user.id)
+def _practice_candidates(analysis: dict) -> list[dict[str, str]]:
+    candidates = analysis.get("similar_practices") or []
+    if not isinstance(candidates, list):
+        return []
+    unique: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for value in candidates:
+        if not isinstance(value, dict):
+            continue
+        question = str(value.get("question") or "").strip()
+        hint = str(value.get("hint") or "").strip()
+        answer = str(value.get("answer_reference") or "").strip()
+        normalized = re.sub(r"\s+", "", question).casefold()
+        if not question or not hint or not answer or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append({"question": question, "hint": hint, "answer_reference": answer})
+    legacy_question = str(analysis.get("similar_question") or "").strip()
+    legacy_answer = str(analysis.get("answer_reference") or "").strip()
+    if len(unique) < 2 and legacy_question and legacy_answer:
+        legacy_values = [
+            {
+                "question": legacy_question,
+                "hint": "先整理题目条件并确定适用的方法。",
+                "answer_reference": legacy_answer,
+            },
+            {
+                "question": f"请先写出关键条件，再完成这道同类题：{legacy_question}",
+                "hint": "把已知量、未知量和限制条件分开列出。",
+                "answer_reference": legacy_answer,
+            },
+            {
+                "question": f"请换一种检验顺序解答并核对结果：{legacy_question}",
+                "hint": "得出答案后代回原条件检查边界和符号。",
+                "answer_reference": legacy_answer,
+            },
+        ]
+        for value in legacy_values:
+            normalized = re.sub(r"\s+", "", value["question"]).casefold()
+            if normalized not in seen:
+                seen.add(normalized)
+                unique.append(value)
+    return unique[:3]
+
+
+@router.post("/{mistake_id}/practices/generate", response_model=MistakePracticeRoundResponse, status_code=201)
+def generate_practice(mistake_id: str, db: DbSession, user: CurrentUser) -> MistakePracticeRound:
+    mistake = db.scalar(
+        select(MistakeProblem)
+        .where(MistakeProblem.id == mistake_id, MistakeProblem.user_id == user.id)
+        .with_for_update()
+    )
+    if mistake is None:
+        raise HTTPException(status_code=404, detail="错题不存在")
     if mistake.analysis_status != "completed" or not mistake.analysis:
         raise HTTPException(status_code=409, detail="请先完成错题分析")
-    question = str(mistake.analysis.get("similar_question") or "").strip()
-    answer_reference = str(mistake.analysis.get("answer_reference") or "").strip()
-    if not question or not answer_reference:
-        raise HTTPException(status_code=409, detail="分析结果没有可用的同类练习")
     existing = db.scalar(
-        select(MistakePractice)
+        select(MistakePracticeRound)
         .where(
-            MistakePractice.mistake_id == mistake.id,
-            MistakePractice.user_id == user.id,
-            MistakePractice.source == "ai_analysis",
-            MistakePractice.question_text == question,
+            MistakePracticeRound.mistake_id == mistake.id,
+            MistakePracticeRound.user_id == user.id,
+            MistakePracticeRound.status == "active",
         )
-        .order_by(MistakePractice.created_at.desc())
+        .options(selectinload(MistakePracticeRound.practices))
+        .order_by(MistakePracticeRound.round_number.desc())
     )
     if existing is not None:
         return existing
-    practice = MistakePractice(
+    if mistake.review_stage == "completed" or mistake.study_status == "mastered":
+        raise HTTPException(status_code=409, detail="该错题已完成隔周复习")
+    now = datetime.now(timezone.utc)
+    if mistake.next_review_at is not None and _utc(mistake.next_review_at) > now:
+        raise HTTPException(status_code=409, detail=f"下一轮复习将在 {_utc(mistake.next_review_at).isoformat()} 开放")
+    candidates = _practice_candidates(mistake.analysis)
+    if len(candidates) < 2:
+        raise HTTPException(status_code=409, detail="分析结果不足两道有效练习，请重新分析错题")
+    round_number = (db.scalar(
+        select(func.max(MistakePracticeRound.round_number)).where(MistakePracticeRound.mistake_id == mistake.id)
+    ) or 0) + 1
+    practice_round = MistakePracticeRound(
+        id=new_id(),
         mistake_id=mistake.id,
         user_id=user.id,
-        question_text=question,
-        answer_reference=answer_reference,
-        source="ai_analysis",
+        round_number=round_number,
+        review_stage=mistake.review_stage,
+        question_count=len(candidates),
     )
-    db.add(practice)
-    db.commit()
-    db.refresh(practice)
-    return practice
+    db.add(practice_round)
+    db.add_all(
+        MistakePractice(
+            mistake_id=mistake.id,
+            user_id=user.id,
+            round_id=practice_round.id,
+            position=index,
+            question_text=value["question"],
+            hint=value["hint"],
+            answer_reference=value["answer_reference"],
+            source="ai_analysis",
+        )
+        for index, value in enumerate(candidates, start=1)
+    )
+    db.add(
+        AuditLog(
+            actor_user_id=user.id,
+            action="mistake.practice_round_started",
+            target_type="mistake_practice_round",
+            target_id=practice_round.id,
+            details={"mistake_id": mistake.id, "review_stage": mistake.review_stage, "question_count": len(candidates)},
+        )
+    )
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        concurrent_round = db.scalar(
+            select(MistakePracticeRound)
+            .where(
+                MistakePracticeRound.mistake_id == mistake_id,
+                MistakePracticeRound.user_id == user.id,
+                MistakePracticeRound.status == "active",
+            )
+            .options(selectinload(MistakePracticeRound.practices))
+            .order_by(MistakePracticeRound.round_number.desc())
+        )
+        if concurrent_round is None:
+            raise
+        return concurrent_round
+    return db.scalar(
+        select(MistakePracticeRound)
+        .where(MistakePracticeRound.id == practice_round.id)
+        .options(selectinload(MistakePracticeRound.practices))
+    )
 
 
 @router.post("/{mistake_id}/practices/{practice_id}/submit", response_model=MistakePracticeResponse)
@@ -488,7 +700,13 @@ def submit_practice(
     db: DbSession,
     user: CurrentUser,
 ) -> MistakePractice:
-    mistake = _owned_mistake(db, mistake_id, user.id)
+    mistake = db.scalar(
+        select(MistakeProblem)
+        .where(MistakeProblem.id == mistake_id, MistakeProblem.user_id == user.id)
+        .with_for_update()
+    )
+    if mistake is None:
+        raise HTTPException(status_code=404, detail="错题不存在")
     practice = db.scalar(
         select(MistakePractice).where(
             MistakePractice.id == practice_id,
@@ -498,6 +716,8 @@ def submit_practice(
     )
     if practice is None:
         raise HTTPException(status_code=404, detail="练习不存在")
+    if practice.status == "completed":
+        raise HTTPException(status_code=409, detail="该练习已经提交，不能重复作答")
     server_correct, validation = validate_practice_answer(payload.student_answer, practice.answer_reference)
     authoritative = bool(validation.get("authoritative"))
     resolved_correct = server_correct
@@ -514,10 +734,64 @@ def submit_practice(
     practice.is_correct = resolved_correct
     practice.validation_details = validation
     practice.status = "completed"
-    practice.completed_at = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
+    practice.completed_at = now
     mistake.attempt_count += 1
-    mistake.study_status = "mastered" if resolved_correct is True and authoritative else "reviewing"
-    if resolved_correct is True and authoritative and mistake.knowledge_node_id:
+    mistake.last_reviewed_at = now
+    mistake.study_status = "reviewing"
+    completed_stage: str | None = None
+    stage_passed = False
+    practice_round = None
+    if practice.round_id:
+        practice_round = db.scalar(
+            select(MistakePracticeRound)
+            .where(
+                MistakePracticeRound.id == practice.round_id,
+                MistakePracticeRound.mistake_id == mistake.id,
+                MistakePracticeRound.user_id == user.id,
+            )
+            .options(selectinload(MistakePracticeRound.practices))
+            .with_for_update()
+        )
+    db.flush()
+    if practice_round is not None and all(item.status == "completed" for item in practice_round.practices):
+        practice_round.status = "completed"
+        practice_round.completed_at = now
+        practice_round.correct_count = sum(item.is_correct is True for item in practice_round.practices)
+        practice_round.authoritative_correct_count = sum(
+            item.is_correct is True and item.validation_details.get("authoritative") is True
+            for item in practice_round.practices
+        )
+        completed_stage = practice_round.review_stage
+        stage_passed = practice_round.authoritative_correct_count == practice_round.question_count
+        if stage_passed:
+            mistake.review_streak += 1
+            if completed_stage == "correction":
+                mistake.first_corrected_at = mistake.first_corrected_at or now
+                mistake.review_stage = "next_day"
+                mistake.next_review_at = now + timedelta(days=1)
+            elif completed_stage == "next_day":
+                mistake.second_attempt_correct = True
+                mistake.review_stage = "next_week"
+                mistake.next_review_at = now + timedelta(days=7)
+            elif completed_stage == "next_week":
+                mistake.review_stage = "completed"
+                mistake.next_review_at = None
+                mistake.study_status = "mastered"
+        else:
+            if completed_stage == "next_day":
+                mistake.second_attempt_correct = False
+            mistake.review_streak = 0
+            mistake.next_review_at = now + timedelta(days=1)
+    elif practice_round is None:
+        stage_passed = resolved_correct is True and authoritative
+        if stage_passed:
+            mistake.first_corrected_at = mistake.first_corrected_at or now
+            mistake.review_stage = "next_day"
+            mistake.review_streak = 1
+            mistake.next_review_at = now + timedelta(days=1)
+
+    if mistake.study_status == "mastered" and mistake.knowledge_node_id:
         state = db.scalar(
             select(UserKnowledgeState).where(
                 UserKnowledgeState.user_id == user.id,
@@ -536,6 +810,9 @@ def submit_practice(
             event_data={
                 "mistake_id": mistake.id,
                 "practice_id": practice.id,
+                "practice_round_id": practice.round_id,
+                "review_stage": completed_stage,
+                "round_passed": stage_passed if completed_stage else None,
                 "passed": resolved_correct if authoritative else None,
                 "validation_method": validation["method"],
             },

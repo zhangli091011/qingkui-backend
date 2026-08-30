@@ -536,6 +536,11 @@ class MistakeProblem(Base):
     study_status: Mapped[str] = mapped_column(String(30), default="active", index=True)
     next_review_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    review_stage: Mapped[str] = mapped_column(String(30), default="correction", index=True)
+    first_corrected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    second_attempt_correct: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    review_streak: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
@@ -547,6 +552,9 @@ class MistakeProblem(Base):
     )
     practices: Mapped[list[MistakePractice]] = relationship(
         back_populates="mistake", cascade="all, delete-orphan", order_by="MistakePractice.created_at"
+    )
+    practice_rounds: Mapped[list[MistakePracticeRound]] = relationship(
+        back_populates="mistake", cascade="all, delete-orphan", order_by="MistakePracticeRound.round_number"
     )
 
 
@@ -593,13 +601,41 @@ class OcrTask(Base):
     mistake: Mapped[MistakeProblem] = relationship(back_populates="ocr_tasks")
 
 
-class MistakePractice(Base):
-    __tablename__ = "mistake_practices"
+class MistakePracticeRound(Base):
+    __tablename__ = "mistake_practice_rounds"
+    __table_args__ = (UniqueConstraint("mistake_id", "round_number", name="uq_mistake_practice_round_number"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     mistake_id: Mapped[str] = mapped_column(ForeignKey("mistake_problems.id", ondelete="CASCADE"), index=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    round_number: Mapped[int] = mapped_column(Integer)
+    review_stage: Mapped[str] = mapped_column(String(30), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="active", index=True)
+    question_count: Mapped[int] = mapped_column(Integer)
+    correct_count: Mapped[int] = mapped_column(Integer, default=0)
+    authoritative_correct_count: Mapped[int] = mapped_column(Integer, default=0)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    mistake: Mapped[MistakeProblem] = relationship(back_populates="practice_rounds")
+    practices: Mapped[list[MistakePractice]] = relationship(
+        back_populates="round", cascade="all, delete-orphan", order_by="MistakePractice.position"
+    )
+
+
+class MistakePractice(Base):
+    __tablename__ = "mistake_practices"
+    __table_args__ = (UniqueConstraint("round_id", "position", name="uq_mistake_practice_round_position"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    mistake_id: Mapped[str] = mapped_column(ForeignKey("mistake_problems.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    round_id: Mapped[str | None] = mapped_column(
+        ForeignKey("mistake_practice_rounds.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    position: Mapped[int | None] = mapped_column(Integer, nullable=True)
     question_text: Mapped[str] = mapped_column(Text)
+    hint: Mapped[str | None] = mapped_column(Text, nullable=True)
     answer_reference: Mapped[str | None] = mapped_column(Text, nullable=True)
     source: Mapped[str] = mapped_column(String(30), default="generated")
     status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
@@ -610,6 +646,7 @@ class MistakePractice(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     mistake: Mapped[MistakeProblem] = relationship(back_populates="practices")
+    round: Mapped[MistakePracticeRound | None] = relationship(back_populates="practices")
 
 
 class AuditLog(Base):
