@@ -9,6 +9,7 @@ from app.models import (
     AuditLog,
     ClassMembership,
     Conversation,
+    ContentContribution,
     CreditAccount,
     CreditLedger,
     CreditRedemption,
@@ -34,6 +35,8 @@ def erase_user_account(db: Session, user: User, *, delete_external_assets: bool 
     user_id = user.id
     db.execute(delete(FeedbackSubmission).where(FeedbackSubmission.user_id == user_id))
     db.execute(update(FeedbackSubmission).where(FeedbackSubmission.reviewed_by == user_id).values(reviewed_by=None))
+    db.execute(delete(ContentContribution).where(ContentContribution.user_id == user_id))
+    db.execute(update(ContentContribution).where(ContentContribution.reviewed_by == user_id).values(reviewed_by=None))
     db.execute(delete(MistakeProblem).where(MistakeProblem.user_id == user_id))
     db.execute(delete(Conversation).where(Conversation.user_id == user_id))
     db.execute(delete(UserKnowledgeState).where(UserKnowledgeState.user_id == user_id))

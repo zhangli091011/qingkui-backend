@@ -452,6 +452,34 @@ class CreditRedemption(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
 
 
+class ContentContribution(Base):
+    __tablename__ = "content_contributions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    school_id: Mapped[str | None] = mapped_column(
+        ForeignKey("schools.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    contribution_type: Mapped[str] = mapped_column(String(30), index=True)
+    title: Mapped[str] = mapped_column(String(160))
+    content: Mapped[str] = mapped_column(Text)
+    source_reference: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="queued", index=True)
+    ai_review: Mapped[dict] = mapped_column(JSON, default=dict)
+    ai_provider: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    ai_model: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    review_note: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    reviewed_by: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reward_amount: Mapped[int] = mapped_column(Integer, default=0)
+    reward_status: Mapped[str] = mapped_column(String(20), default="disabled", index=True)
+    reward_available_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
 class FeedbackSubmission(Base):
     __tablename__ = "feedback_submissions"
 

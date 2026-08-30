@@ -79,6 +79,11 @@ class Settings(BaseSettings):
     organizations_enabled: bool = False
     idempotency_retention_hours: int = 24
     credit_campaigns_enabled: bool = False
+    contributions_enabled: bool = False
+    contribution_rewards_enabled: bool = False
+    contribution_reward_delay_hours: int = 168
+    contribution_queue_provider: Literal["local", "redis"] = "local"
+    contribution_queue_name: str = "qingkui-contributions"
 
     @field_validator("cors_origins", mode="before")
     @classmethod

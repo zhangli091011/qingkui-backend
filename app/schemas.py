@@ -479,6 +479,49 @@ class CreditRedeemResponse(BaseModel):
     balance: int
 
 
+class ContributionCreate(BaseModel):
+    contribution_type: str = Field(pattern=r"^(correction|explanation|question|source)$")
+    title: str = Field(min_length=2, max_length=160)
+    content: str = Field(min_length=20, max_length=20_000)
+    source_reference: str | None = Field(default=None, max_length=1000)
+
+
+class ContributionResponse(ApiModel):
+    id: str
+    school_id: str | None
+    contribution_type: str
+    title: str
+    content: str
+    source_reference: str | None
+    status: str
+    ai_review: dict
+    ai_provider: str | None
+    ai_model: str | None
+    review_note: str | None
+    reward_amount: int
+    reward_status: str
+    reward_available_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AdminContributionResponse(ContributionResponse):
+    user_id: str
+    reviewed_by: str | None
+    reviewed_at: datetime | None
+
+
+class ContributionReview(BaseModel):
+    decision: str = Field(pattern=r"^(approved|rejected)$")
+    review_note: str = Field(min_length=2, max_length=2000)
+    reward_amount: int = Field(default=0, ge=0, le=100_000)
+
+
+class ContributionSettlementResponse(BaseModel):
+    settled_count: int
+    total_credits: int
+
+
 class FeedbackCreate(BaseModel):
     category: str = Field(pattern=r"^(content_error|relation_error|answer_error|version_outdated|product_issue|other)$")
     content: str = Field(min_length=2, max_length=4000)
