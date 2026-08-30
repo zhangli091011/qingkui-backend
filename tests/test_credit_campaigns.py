@@ -56,6 +56,9 @@ def test_hashed_codes_enforce_user_and_campaign_limits(client: TestClient, monke
     assert created.status_code == 201, created.text
     campaign = created.json()
     first_code, second_code = campaign["codes"]
+    active = client.get("/api/credits/campaigns", headers=first_headers)
+    assert active.status_code == 200
+    assert [item["id"] for item in active.json()] == [campaign["id"]]
     with SessionLocal() as db:
         codes = list(db.scalars(select(CreditCode).where(CreditCode.campaign_id == campaign["id"])))
         assert len(codes) == 2
@@ -74,6 +77,10 @@ def test_hashed_codes_enforce_user_and_campaign_limits(client: TestClient, monke
     assert redeemed.status_code == 200
     assert redeemed.json()["amount"] == 50
     assert redeemed.json()["balance"] == first_before + 50
+    redemptions = client.get("/api/credits/redemptions", headers=first_headers)
+    assert redemptions.status_code == 200
+    assert redemptions.json()[0]["campaign_name"] == "试点活动额度"
+    assert redemptions.json()[0]["amount"] == 50
     assert client.post(
         "/api/credits/redeem", json={"code": first_code}, headers=first_headers
     ).status_code == 409
@@ -130,6 +137,10 @@ def test_school_campaign_requires_matching_active_membership(client: TestClient,
     )
     assert created.status_code == 201
     code = created.json()["codes"][0]
+    outsider_campaigns = client.get("/api/credits/campaigns", headers=outsider_headers)
+    member_campaigns = client.get("/api/credits/campaigns", headers=member_headers)
+    assert all(item["id"] != created.json()["id"] for item in outsider_campaigns.json())
+    assert any(item["id"] == created.json()["id"] for item in member_campaigns.json())
     assert client.post(
         "/api/credits/redeem", json={"code": code}, headers=outsider_headers
     ).status_code == 403

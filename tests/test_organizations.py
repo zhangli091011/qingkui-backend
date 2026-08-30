@@ -5,7 +5,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import OrganizationInvite, User, UserRole
+from app.models import ClassMembership, OrganizationInvite, SchoolMembership, User, UserRole
 
 
 def _register(client: TestClient, prefix: str) -> tuple[dict, dict[str, str]]:
@@ -143,6 +143,30 @@ def test_school_class_invites_and_anonymous_teacher_overview(client: TestClient,
     memberships = client.get("/api/organizations/me", headers=student_headers)
     assert memberships.status_code == 200
     assert memberships.json()["memberships"][0]["school"]["id"] == school_id
+
+    left = client.delete(
+        f"/api/organizations/schools/{school_id}/membership",
+        headers=student_headers,
+    )
+    assert left.status_code == 204
+    assert client.get("/api/organizations/me", headers=student_headers).json()["memberships"] == []
+    with SessionLocal() as db:
+        user = db.get(User, student["user"]["id"])
+        school_membership = db.scalar(
+            select(SchoolMembership).where(
+                SchoolMembership.school_id == school_id,
+                SchoolMembership.user_id == student["user"]["id"],
+            )
+        )
+        class_membership = db.scalar(
+            select(ClassMembership).where(
+                ClassMembership.class_id == class_id,
+                ClassMembership.user_id == student["user"]["id"],
+            )
+        )
+        assert user is not None and user.tenant_id is None
+        assert school_membership is not None and school_membership.status == "left"
+        assert class_membership is not None and class_membership.status == "left"
 
 
 def test_user_cannot_join_two_schools(client: TestClient, monkeypatch) -> None:

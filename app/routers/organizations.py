@@ -5,8 +5,8 @@ import hmac
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException, status
-from sqlalchemy import func, select
+from fastapi import APIRouter, HTTPException, Response, status
+from sqlalchemy import func, select, update
 
 from app.config import settings
 from app.deps import CurrentUser, DbSession, SuperAdminUser
@@ -140,6 +140,37 @@ def my_organizations(db: DbSession, user: CurrentUser) -> OrganizationMeResponse
             for membership in memberships
         ]
     )
+
+
+@router.delete("/schools/{school_id}/membership", status_code=status.HTTP_204_NO_CONTENT)
+def leave_school(school_id: str, db: DbSession, user: CurrentUser) -> Response:
+    _enabled()
+    membership = _school_membership(db, user, school_id)
+    if membership is None:
+        raise HTTPException(status_code=404, detail="不属于该学校")
+    membership.status = "left"
+    db.execute(
+        update(ClassMembership)
+        .where(
+            ClassMembership.user_id == user.id,
+            ClassMembership.class_id.in_(
+                select(SchoolClass.id).where(SchoolClass.school_id == school_id)
+            ),
+        )
+        .values(status="left")
+    )
+    if user.tenant_id == school_id:
+        user.tenant_id = None
+    db.add(
+        AuditLog(
+            actor_user_id=user.id,
+            action="school.membership_left",
+            target_type="school",
+            target_id=school_id,
+        )
+    )
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/schools/{school_id}/classes", response_model=list[SchoolClassResponse])

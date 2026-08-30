@@ -4,7 +4,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from app.config import settings
 from app.deps import CurrentUser, DbSession, SuperAdminUser
@@ -28,6 +28,7 @@ from app.schemas import (
     CreditLedgerResponse,
     CreditRedeemRequest,
     CreditRedeemResponse,
+    CreditRedemptionResponse,
 )
 
 
@@ -74,6 +75,58 @@ def ledger(
             .limit(limit)
         )
     )
+
+
+@router.get("/campaigns", response_model=list[CreditCampaignResponse])
+def active_campaigns(db: DbSession, user: CurrentUser) -> list[CreditCampaign]:
+    _campaigns_enabled()
+    now = datetime.now(timezone.utc)
+    school_ids = select(SchoolMembership.school_id).where(
+        SchoolMembership.user_id == user.id,
+        SchoolMembership.status == "active",
+    )
+    return list(
+        db.scalars(
+            select(CreditCampaign)
+            .where(
+                CreditCampaign.status == "active",
+                CreditCampaign.starts_at <= now,
+                CreditCampaign.ends_at > now,
+                CreditCampaign.redemption_count < CreditCampaign.max_redemptions,
+                or_(
+                    CreditCampaign.school_id.is_(None),
+                    CreditCampaign.school_id.in_(school_ids),
+                ),
+            )
+            .order_by(CreditCampaign.ends_at, CreditCampaign.created_at.desc())
+        )
+    )
+
+
+@router.get("/redemptions", response_model=list[CreditRedemptionResponse])
+def redemption_history(
+    db: DbSession,
+    user: CurrentUser,
+    limit: int = Query(default=50, ge=1, le=100),
+) -> list[CreditRedemptionResponse]:
+    _campaigns_enabled()
+    rows = db.execute(
+        select(CreditRedemption, CreditCampaign.name)
+        .join(CreditCampaign, CreditCampaign.id == CreditRedemption.campaign_id)
+        .where(CreditRedemption.user_id == user.id)
+        .order_by(CreditRedemption.created_at.desc())
+        .limit(limit)
+    ).all()
+    return [
+        CreditRedemptionResponse(
+            id=redemption.id,
+            campaign_id=redemption.campaign_id,
+            campaign_name=campaign_name,
+            amount=redemption.amount,
+            created_at=redemption.created_at,
+        )
+        for redemption, campaign_name in rows
+    ]
 
 
 @router.post("/redeem", response_model=CreditRedeemResponse)

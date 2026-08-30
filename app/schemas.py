@@ -621,6 +621,14 @@ class CreditRedeemResponse(BaseModel):
     balance: int
 
 
+class CreditRedemptionResponse(BaseModel):
+    id: str
+    campaign_id: str
+    campaign_name: str
+    amount: int
+    created_at: datetime
+
+
 class ContributionCreate(BaseModel):
     contribution_type: str = Field(pattern=r"^(correction|explanation|question|source)$")
     title: str = Field(min_length=2, max_length=160)
