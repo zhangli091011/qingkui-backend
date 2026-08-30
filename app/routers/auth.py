@@ -164,7 +164,9 @@ def delete_account(db: DbSession, user: CurrentUser) -> MessageResponse:
     db.execute(delete(FeedbackSubmission).where(FeedbackSubmission.user_id == user_id))
     db.execute(delete(RefreshSession).where(RefreshSession.user_id == user_id))
     db.execute(update(AuditLog).where(AuditLog.actor_user_id == user_id).values(actor_user_id=None))
-    user.username = f"deleted_{user.id}"
+    # usernames are capped at 32 characters; keep the anonymized value unique
+    # without overflowing PostgreSQL's VARCHAR constraint.
+    user.username = f"deleted_{user.id[:24]}"
     user.email = None
     user.nickname = "已注销用户"
     user.password_hash = "deleted"
