@@ -309,6 +309,102 @@ class FeedbackSubmission(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class MistakeProblem(Base):
+    __tablename__ = "mistake_problems"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    subject: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    question_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    corrected_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    student_work: Mapped[str | None] = mapped_column(Text, nullable=True)
+    question_goal: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    error_category: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
+    error_note: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    knowledge_node_id: Mapped[str | None] = mapped_column(
+        ForeignKey("knowledge_nodes.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    link_status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    review_status: Mapped[str] = mapped_column(String(30), default="draft", index=True)
+    study_status: Mapped[str] = mapped_column(String(30), default="active", index=True)
+    next_review_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    assets: Mapped[list[MistakeAsset]] = relationship(
+        back_populates="mistake", cascade="all, delete-orphan", order_by="MistakeAsset.created_at"
+    )
+    ocr_tasks: Mapped[list[OcrTask]] = relationship(
+        back_populates="mistake", cascade="all, delete-orphan", order_by="OcrTask.created_at"
+    )
+    practices: Mapped[list[MistakePractice]] = relationship(
+        back_populates="mistake", cascade="all, delete-orphan", order_by="MistakePractice.created_at"
+    )
+
+
+class MistakeAsset(Base):
+    __tablename__ = "mistake_assets"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    mistake_id: Mapped[str] = mapped_column(ForeignKey("mistake_problems.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    object_key: Mapped[str] = mapped_column(String(1000), unique=True)
+    mime_type: Mapped[str] = mapped_column(String(80))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    checksum_sha256: Mapped[str] = mapped_column(String(64), index=True)
+    width: Mapped[int] = mapped_column(Integer)
+    height: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(30), default="uploading", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    mistake: Mapped[MistakeProblem] = relationship(back_populates="assets")
+
+
+class OcrTask(Base):
+    __tablename__ = "ocr_tasks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    mistake_id: Mapped[str] = mapped_column(ForeignKey("mistake_problems.id", ondelete="CASCADE"), index=True)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("mistake_assets.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="uploading", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    result_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    formulas: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    confidence: Mapped[float | None] = mapped_column(nullable=True)
+    requires_review: Mapped[bool] = mapped_column(Boolean, default=True)
+    error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    queued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    mistake: Mapped[MistakeProblem] = relationship(back_populates="ocr_tasks")
+
+
+class MistakePractice(Base):
+    __tablename__ = "mistake_practices"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    mistake_id: Mapped[str] = mapped_column(ForeignKey("mistake_problems.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    question_text: Mapped[str] = mapped_column(Text)
+    answer_reference: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(String(30), default="generated")
+    status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    student_answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_correct: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    validation_details: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    mistake: Mapped[MistakeProblem] = relationship(back_populates="practices")
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 

@@ -41,6 +41,36 @@ def _client():
     return oss2.Bucket(auth, settings.oss_endpoint.rstrip("/"), settings.oss_bucket)
 
 
+def put_private_bytes(key: str, payload: bytes, *, content_type: str, checksum_sha256: str) -> None:
+    """Store a private user object and verify its checksum and size."""
+    bucket = _client()
+    headers = {
+        "Content-Type": content_type,
+        "x-oss-meta-sha256": checksum_sha256,
+        "Cache-Control": "private, no-store",
+    }
+    bucket.put_object(key, payload, headers=headers)
+    if not _object_exists(bucket, key, checksum_sha256, len(payload)):
+        try:
+            bucket.delete_object(key)
+        finally:
+            raise RuntimeError("OSS upload verification failed")
+
+
+def get_private_bytes(key: str) -> bytes:
+    return _client().get_object(key).read()
+
+
+def delete_private_object(key: str) -> None:
+    _client().delete_object(key)
+
+
+def sign_private_download(key: str, *, expires_seconds: int | None = None) -> str:
+    """Create a short-lived URL for trusted server-side integrations."""
+    lifetime = expires_seconds or settings.oss_signed_url_seconds
+    return _client().sign_url("GET", key, max(30, min(lifetime, 3600)), slash_safe=True)
+
+
 def _sha256(path: Path) -> tuple[str, int]:
     digest = hashlib.sha256()
     size = 0

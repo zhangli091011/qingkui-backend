@@ -13,6 +13,8 @@ from app.models import (
     CreditLedger,
     FeedbackSubmission,
     LearningEvent,
+    MistakeAsset,
+    MistakeProblem,
     RefreshSession,
     User,
     UserKnowledgeState,
@@ -28,6 +30,7 @@ from app.schemas import (
     UserResponse,
 )
 from app.security import create_access_token, create_refresh_token, decode_token, hash_password, verify_password
+from app.services.mistakes import delete_assets
 
 
 router = APIRouter(prefix="/auth", tags=["账户"])
@@ -147,6 +150,12 @@ def change_password(payload: ChangePasswordRequest, db: DbSession, user: Current
 @router.delete("/me", response_model=MessageResponse)
 def delete_account(db: DbSession, user: CurrentUser) -> MessageResponse:
     user_id = user.id
+    mistake_assets = list(db.scalars(select(MistakeAsset).where(MistakeAsset.user_id == user_id)))
+    try:
+        delete_assets(mistake_assets)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail="个人图片存储暂时不可用，账户未注销") from exc
+    db.execute(delete(MistakeProblem).where(MistakeProblem.user_id == user_id))
     db.execute(delete(Conversation).where(Conversation.user_id == user_id))
     db.execute(delete(UserKnowledgeState).where(UserKnowledgeState.user_id == user_id))
     db.execute(delete(LearningEvent).where(LearningEvent.user_id == user_id))

@@ -139,6 +139,102 @@ class LearningSummary(BaseModel):
     error_prone: list[LearningSummaryItem]
 
 
+class MistakeCreate(BaseModel):
+    subject: str | None = Field(default=None, max_length=40)
+    question_text: str | None = Field(default=None, max_length=12000)
+    student_work: str | None = Field(default=None, max_length=12000)
+    question_goal: str | None = Field(default=None, max_length=1000)
+
+
+class MistakeUpdate(BaseModel):
+    subject: str | None = Field(default=None, max_length=40)
+    question_text: str | None = Field(default=None, max_length=12000)
+    corrected_text: str | None = Field(default=None, max_length=12000)
+    student_work: str | None = Field(default=None, max_length=12000)
+    question_goal: str | None = Field(default=None, max_length=1000)
+    error_category: str | None = Field(default=None, pattern=r"^(concept|reading|method|calculation|expression)$")
+    error_note: str | None = Field(default=None, max_length=2000)
+    knowledge_node_id: str | None = Field(default=None, max_length=64)
+    study_status: str | None = Field(default=None, pattern=r"^(active|reviewing|mastered|archived)$")
+
+
+class MistakeAssetResponse(ApiModel):
+    id: str
+    mime_type: str
+    size_bytes: int
+    width: int
+    height: int
+    status: str
+    created_at: datetime
+
+
+class OcrTaskResponse(ApiModel):
+    id: str
+    asset_id: str
+    status: str
+    attempts: int
+    result_text: str | None
+    formulas: list[dict]
+    confidence: float | None
+    requires_review: bool
+    error_code: str | None
+    error_message: str | None
+    queued_at: datetime | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+
+
+class MistakePracticeResponse(ApiModel):
+    id: str
+    question_text: str
+    answer_reference: str | None
+    source: str
+    status: str
+    student_answer: str | None
+    is_correct: bool | None
+    validation_details: dict
+    created_at: datetime
+    completed_at: datetime | None
+
+
+class MistakeResponse(ApiModel):
+    id: str
+    subject: str | None
+    question_text: str | None
+    corrected_text: str | None
+    student_work: str | None
+    question_goal: str | None
+    error_category: str | None
+    error_note: str | None
+    knowledge_node_id: str | None
+    link_status: str
+    review_status: str
+    study_status: str
+    next_review_at: datetime | None
+    attempt_count: int
+    created_at: datetime
+    updated_at: datetime
+    assets: list[MistakeAssetResponse] = Field(default_factory=list)
+    ocr_tasks: list[OcrTaskResponse] = Field(default_factory=list)
+    practices: list[MistakePracticeResponse] = Field(default_factory=list)
+
+
+class OcrCorrection(BaseModel):
+    corrected_text: str = Field(min_length=1, max_length=12000)
+
+
+class PracticeCreate(BaseModel):
+    question_text: str | None = Field(default=None, max_length=12000)
+    answer_reference: str | None = Field(default=None, max_length=12000)
+
+
+class PracticeSubmit(BaseModel):
+    student_answer: str = Field(min_length=1, max_length=12000)
+    is_correct: bool
+    validation_details: dict = Field(default_factory=dict)
+
+
 class ConversationCreate(BaseModel):
     mode: QaMode = QaMode.knowledge
     knowledge_node_id: str | None = None

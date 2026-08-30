@@ -60,6 +60,16 @@ class Settings(BaseSettings):
     oss_source_prefix: str = "knowledge/source"
     oss_vector_object_key: str = "knowledge/index/qingkui-vectors.npz"
     oss_vector_pointer_key: str = "knowledge/index/current.json"
+    oss_user_content_prefix: str = "user-content/mistakes"
+    oss_signed_url_seconds: int = 300
+
+    redis_url: str = "redis://redis:6379/0"
+    ocr_queue_provider: Literal["local", "redis"] = "local"
+    ocr_queue_name: str = "qingkui-ocr"
+    ocr_max_attempts: int = 3
+    ocr_review_threshold: float = 0.85
+    user_upload_max_bytes: int = 10 * 1024 * 1024
+    user_upload_max_pixels: int = 20_000_000
 
     @field_validator("cors_origins", mode="before")
     @classmethod

@@ -6,7 +6,7 @@ from sqlalchemy import text
 
 from app.config import settings
 from app.db import Base, SessionLocal, engine
-from app.routers import admin, auth, credits, feedback, knowledge, learning, qa
+from app.routers import admin, auth, credits, feedback, knowledge, learning, mistakes, qa
 from app.schemas import HealthResponse
 from app.seed import seed_demo_content
 from app.admin_ui import admin_page
@@ -40,6 +40,7 @@ for router in (
     knowledge.router,
     qa.router,
     learning.router,
+    mistakes.router,
     credits.router,
     credits.admin_router,
     feedback.router,
