@@ -673,7 +673,7 @@ class ContributionSettlementResponse(BaseModel):
 
 
 class FeedbackCreate(BaseModel):
-    category: str = Field(pattern=r"^(content_error|relation_error|answer_error|version_outdated|product_issue|other)$")
+    category: str = Field(pattern=r"^(content_error|relation_error|answer_error|version_outdated|review_request|product_issue|other)$")
     content: str = Field(min_length=2, max_length=4000)
     node_id: str | None = None
     message_id: str | None = None

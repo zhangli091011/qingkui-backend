@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, Query
 from app.deps import CurrentUser, DbSession
 from sqlalchemy import select
 
-from app.models import Conversation, FeedbackSubmission, KnowledgeNode, LearningEvent, Message
+from app.models import Conversation, FeedbackSubmission, KnowledgeNode, KnowledgeStatus, LearningEvent, Message, UserKnowledgeState
 from app.schemas import FeedbackCreate, FeedbackResponse
 from app.services.content_safety import moderate_text, record_safety_event
 
@@ -39,6 +39,8 @@ def submit_feedback(payload: FeedbackCreate, db: DbSession, user: CurrentUser) -
         )
         if owned_message is None:
             raise HTTPException(status_code=404, detail="回答不存在")
+    else:
+        owned_message = None
     feedback = FeedbackSubmission(
         user_id=user.id,
         node_id=payload.node_id,
@@ -48,6 +50,33 @@ def submit_feedback(payload: FeedbackCreate, db: DbSession, user: CurrentUser) -
     )
     db.add(feedback)
     db.flush()
+    if payload.category == "review_request" and owned_message is not None:
+        # A review request is an actionable learning signal, not only a ticket.
+        # The assistant stores linked node IDs as server-generated JSON.
+        linked_node_ids = owned_message.linked_node_ids or []
+        node_id = linked_node_ids[0] if linked_node_ids else None
+        if node_id and db.get(KnowledgeNode, node_id) is not None:
+            state = db.scalar(
+                select(UserKnowledgeState).where(
+                    UserKnowledgeState.user_id == user.id,
+                    UserKnowledgeState.node_id == node_id,
+                )
+            )
+            if state is None:
+                state = UserKnowledgeState(user_id=user.id, node_id=node_id, status=KnowledgeStatus.unstable)
+                db.add(state)
+            else:
+                # A deliberate review request can reopen even a previously
+                # verified node; the verification event remains auditable.
+                state.status = KnowledgeStatus.unstable
+            db.add(
+                LearningEvent(
+                    user_id=user.id,
+                    node_id=node_id,
+                    event_type="marked_confused",
+                    event_data={"feedback_id": feedback.id, "message_id": owned_message.id},
+                )
+            )
     db.add(
         LearningEvent(
             user_id=user.id,

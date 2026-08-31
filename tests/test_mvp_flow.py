@@ -54,6 +54,62 @@ def test_graph_qa_learning_and_credit_flow(client: TestClient, account):
     assert any(item["id"] == "quadratic_function" for item in summary.json()["recent"])
 
 
+def test_answer_feedback_can_report_content_and_schedule_linked_node_review(client: TestClient, account):
+    _, headers = account
+    session = client.post(
+        "/api/qa/sessions",
+        json={"mode": "knowledge", "knowledge_node_id": "quadratic_function"},
+        headers=headers,
+    ).json()
+    answer = client.post(
+        f"/api/qa/sessions/{session['id']}/messages",
+        json={"content": "什么是二次函数？", "help_level": "approach"},
+        headers=headers,
+    )
+    assert answer.status_code == 200, answer.text
+    message_id = answer.json()["assistant_message"]["id"]
+    assert "quadratic_function" in answer.json()["assistant_message"]["linked_node_ids"]
+
+    reported = client.post(
+        "/api/feedback",
+        json={
+            "category": "answer_error",
+            "content": "该回答可能存在内容错误，请人工审核",
+            "message_id": message_id,
+        },
+        headers=headers,
+    )
+    assert reported.status_code == 201, reported.text
+    review = client.post(
+        "/api/feedback",
+        json={
+            "category": "review_request",
+            "content": "将回答关联知识点加入待复习",
+            "message_id": message_id,
+        },
+        headers=headers,
+    )
+    assert review.status_code == 201, review.text
+    summary = client.get("/api/learning/summary", headers=headers).json()
+    assert any(item["id"] == "quadratic_function" for item in summary["review"]), summary
+
+    other = client.post(
+        "/api/auth/register",
+        json={"username": "feedback_action_other", "password": "student-pass-456", "nickname": "其他同学"},
+    ).json()
+    other_headers = {"Authorization": f"Bearer {other['access_token']}"}
+    forbidden = client.post(
+        "/api/feedback",
+        json={
+            "category": "review_request",
+            "content": "尝试访问他人回答",
+            "message_id": message_id,
+        },
+        headers=other_headers,
+    )
+    assert forbidden.status_code == 404
+
+
 def test_subject_catalog_and_auto_routing(client: TestClient, account):
     _, headers = account
     subjects = client.get("/api/knowledge/subjects", headers=headers)
