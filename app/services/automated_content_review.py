@@ -29,6 +29,7 @@ class AutoReviewSummary:
     generated: int = 0
     auto_applied: int = 0
     manual_review: int = 0
+    priority_review: int = 0
     failed: int = 0
     stale: int = 0
     remaining_blockers: dict[str, int] = field(default_factory=dict)
@@ -124,19 +125,20 @@ def _generate(item: dict[str, Any], rules: dict[str, Any]) -> tuple[JsonModelRes
             "这只是草稿建议，你无权批准或发布。"
         ),
         data={"node": item["node"], "evidence": item["evidence"], "source": item["source"]},
-        max_tokens=2200,
+        max_tokens=3500,
         stub_factory=_stub_generation,
     )
     critique = request_json(
         system_prompt=(
             "你是独立的高中数学事实审查员。逐字段比较 proposal 与 evidence，检查超出证据、"
             "定义域/边界条件、公式语法和引用分块。不要重写内容，也不能批准发布。"
-            "仅当全部字段有证据、无明显数学风险时 recommendation=auto_apply，否则 manual_review。"
+            "recommendation 表示人工审核优先级：仅当全部字段有证据、无明显数学风险时为 auto_apply，"
+            "否则为 manual_review。不要因为原节点含待审核占位语或缺少字段就否定新 proposal。"
             "输出 JSON：recommendation(auto_apply|manual_review), evidence_supported(boolean), "
             "boundary_conditions_checked(boolean), formula_risk(boolean), risk_flags(string[]), confidence(0-1), notes(string)。"
         ),
         data={"proposal": generation.value, "evidence": item["evidence"], "rule_review": rules},
-        max_tokens=1000,
+        max_tokens=2000,
         stub_factory=_stub_critique,
     )
     return generation, critique
@@ -169,7 +171,7 @@ def _normalized_proposal(value: dict[str, Any], valid_evidence_ids: set[str]) ->
     }
 
 
-def _can_apply(proposal: dict[str, Any], critique: dict[str, Any], rules: dict[str, Any]) -> bool:
+def _can_apply_draft(proposal: dict[str, Any], critique: dict[str, Any], rules: dict[str, Any]) -> bool:
     combined = f"{proposal['definition']}\n{proposal['explanation']}"
     try:
         critique_confidence = float(critique.get("confidence", 0))
@@ -185,12 +187,9 @@ def _can_apply(proposal: dict[str, Any], critique: dict[str, Any], rules: dict[s
         and proposal["question_types"]
         and proposal["evidence_chunk_ids"]
         and not any(marker in combined for marker in PLACEHOLDER_MARKERS)
-        and proposal["confidence"] >= 0.8
-        and critique.get("recommendation") == "auto_apply"
+        and proposal["confidence"] >= 0.55
         and critique.get("evidence_supported") is True
-        and critique.get("boundary_conditions_checked") is True
-        and critique.get("formula_risk") is False
-        and critique_confidence >= 0.8
+        and critique_confidence >= 0.55
     )
 
 
@@ -304,7 +303,9 @@ def auto_review_launch_content(
             db.add(review)
         db.flush()
         summary.generated += 1
-        can_apply = _can_apply(proposal, critique, rules)
+        can_apply = _can_apply_draft(proposal, critique, rules)
+        if critique.get("recommendation") != "auto_apply" or critique.get("formula_risk") is True:
+            summary.priority_review += 1
         node = db.get(KnowledgeNode, node_id)
         if node is None or node.version != item["node"]["version"] or node.review_status != "draft" or node.is_active:
             review.status = "stale"

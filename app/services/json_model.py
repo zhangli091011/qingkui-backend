@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -55,7 +56,7 @@ def request_json(
         "response_format": {"type": "json_object"},
     }
     last_error: Exception | None = None
-    for attempt in range(2):
+    for attempt in range(3):
         try:
             with httpx.Client(timeout=settings.deepseek_timeout_seconds) as client:
                 response = client.post(
@@ -63,7 +64,8 @@ def request_json(
                     headers={"Authorization": f"Bearer {settings.deepseek_api_key}"},
                     json=payload,
                 )
-            if response.status_code in (429, 500, 502, 503, 504) and attempt == 0:
+            if response.status_code in (429, 500, 502, 503, 504) and attempt < 2:
+                time.sleep(2**attempt)
                 continue
             response.raise_for_status()
             body = response.json()
@@ -77,4 +79,7 @@ def request_json(
             )
         except (httpx.HTTPError, json.JSONDecodeError, KeyError, IndexError, ValueError) as exc:
             last_error = exc
-    raise RuntimeError("Strict JSON model request failed") from last_error
+            if attempt < 2:
+                time.sleep(2**attempt)
+    detail = f"{type(last_error).__name__}: {last_error}" if last_error else "unknown error"
+    raise RuntimeError(f"Strict JSON model request failed: {detail}") from last_error
