@@ -100,10 +100,14 @@ class UserPrivacyConsent(Base):
 
 class PasswordResetToken(Base):
     __tablename__ = "password_reset_tokens"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="password_reset_tokens_token_hash_key"),
+        Index("ix_password_reset_tokens_token_hash", "token_hash"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
@@ -111,10 +115,14 @@ class PasswordResetToken(Base):
 
 class School(Base):
     __tablename__ = "schools"
+    __table_args__ = (
+        UniqueConstraint("code", name="schools_code_key"),
+        Index("ix_schools_code", "code", unique=True),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String(120))
-    code: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    code: Mapped[str] = mapped_column(String(40))
     status: Mapped[str] = mapped_column(String(20), default="active", index=True)
     settings: Mapped[dict] = mapped_column(JSON, default=dict)
     created_by: Mapped[str | None] = mapped_column(
@@ -165,13 +173,17 @@ class ClassMembership(Base):
 
 class OrganizationInvite(Base):
     __tablename__ = "organization_invites"
+    __table_args__ = (
+        UniqueConstraint("code_hash", name="organization_invites_code_hash_key"),
+        Index("ix_organization_invites_code_hash", "code_hash", unique=True),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     school_id: Mapped[str] = mapped_column(ForeignKey("schools.id", ondelete="CASCADE"), index=True)
     class_id: Mapped[str | None] = mapped_column(
         ForeignKey("school_classes.id", ondelete="CASCADE"), nullable=True, index=True
     )
-    code_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    code_hash: Mapped[str] = mapped_column(String(64))
     member_role: Mapped[str] = mapped_column(String(20), index=True)
     max_uses: Mapped[int] = mapped_column(Integer, default=1)
     use_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -405,7 +417,11 @@ class LearningCheckAttempt(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    node_id: Mapped[str] = mapped_column(ForeignKey("knowledge_nodes.id", ondelete="CASCADE"), index=True)
+    node_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("knowledge_nodes.id", ondelete="CASCADE"),
+        index=True,
+    )
     prompt: Mapped[str] = mapped_column(String(500))
     choices: Mapped[list[dict]] = mapped_column(JSON)
     correct_choice_id: Mapped[str] = mapped_column(String(64))
@@ -463,12 +479,16 @@ class CreditCampaign(Base):
 
 class CreditCode(Base):
     __tablename__ = "credit_codes"
+    __table_args__ = (
+        UniqueConstraint("code_hash", name="credit_codes_code_hash_key"),
+        Index("ix_credit_codes_code_hash", "code_hash", unique=True),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     campaign_id: Mapped[str] = mapped_column(
         ForeignKey("credit_campaigns.id", ondelete="CASCADE"), index=True
     )
-    code_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    code_hash: Mapped[str] = mapped_column(String(64))
     max_uses: Mapped[int] = mapped_column(Integer, default=1)
     use_count: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)

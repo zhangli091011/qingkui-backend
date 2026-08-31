@@ -15,11 +15,12 @@ def upgrade() -> None:
         "schools",
         sa.Column("id", sa.String(36), primary_key=True),
         sa.Column("name", sa.String(120), nullable=False),
-        sa.Column("code", sa.String(40), nullable=False, unique=True),
+        sa.Column("code", sa.String(40), nullable=False),
         sa.Column("status", sa.String(20), nullable=False),
         sa.Column("settings", sa.JSON(), nullable=False),
         sa.Column("created_by", sa.String(36), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.UniqueConstraint("code", name="schools_code_key"),
     )
     op.create_index("ix_schools_code", "schools", ["code"], unique=True)
     op.create_index("ix_schools_status", "schools", ["status"])
@@ -67,7 +68,7 @@ def upgrade() -> None:
         sa.Column("id", sa.String(36), primary_key=True),
         sa.Column("school_id", sa.String(36), sa.ForeignKey("schools.id", ondelete="CASCADE"), nullable=False),
         sa.Column("class_id", sa.String(36), sa.ForeignKey("school_classes.id", ondelete="CASCADE"), nullable=True),
-        sa.Column("code_hash", sa.String(64), nullable=False, unique=True),
+        sa.Column("code_hash", sa.String(64), nullable=False),
         sa.Column("member_role", sa.String(20), nullable=False),
         sa.Column("max_uses", sa.Integer(), nullable=False),
         sa.Column("use_count", sa.Integer(), nullable=False),
@@ -75,6 +76,7 @@ def upgrade() -> None:
         sa.Column("is_active", sa.Boolean(), nullable=False),
         sa.Column("created_by", sa.String(36), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.UniqueConstraint("code_hash", name="organization_invites_code_hash_key"),
     )
     for name in ("school_id", "class_id", "code_hash", "member_role", "expires_at", "is_active", "created_by"):
         op.create_index(

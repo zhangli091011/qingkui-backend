@@ -32,11 +32,12 @@ def upgrade() -> None:
         "credit_codes",
         sa.Column("id", sa.String(36), primary_key=True),
         sa.Column("campaign_id", sa.String(36), sa.ForeignKey("credit_campaigns.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("code_hash", sa.String(64), nullable=False, unique=True),
+        sa.Column("code_hash", sa.String(64), nullable=False),
         sa.Column("max_uses", sa.Integer(), nullable=False),
         sa.Column("use_count", sa.Integer(), nullable=False),
         sa.Column("is_active", sa.Boolean(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.UniqueConstraint("code_hash", name="credit_codes_code_hash_key"),
     )
     op.create_index("ix_credit_codes_campaign_id", "credit_codes", ["campaign_id"])
     op.create_index("ix_credit_codes_code_hash", "credit_codes", ["code_hash"], unique=True)
