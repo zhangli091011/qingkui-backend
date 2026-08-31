@@ -1,8 +1,9 @@
+import json
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -20,7 +21,7 @@ class Settings(BaseSettings):
     access_token_minutes: int = 30
     refresh_token_days: int = 30
     initial_credits: int = 1280
-    cors_origins: list[str] = ["*"]
+    cors_origins: Annotated[list[str], NoDecode] = ["*"]
     password_reset_minutes: int = 30
     privacy_notice_version: str = "2026-08-31"
     privacy_consent_enforced: bool = False
@@ -109,7 +110,12 @@ class Settings(BaseSettings):
     @classmethod
     def parse_origins(cls, value: object) -> object:
         if isinstance(value, str):
-            return [item.strip() for item in value.split(",") if item.strip()]
+            raw = value.strip()
+            if not raw:
+                return []
+            if raw.startswith("["):
+                return json.loads(raw)
+            return [item.strip() for item in raw.split(",") if item.strip()]
         return value
 
     @model_validator(mode="after")

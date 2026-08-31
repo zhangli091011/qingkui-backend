@@ -22,6 +22,22 @@ def test_ai_kill_switch_overrides_a_configured_provider() -> None:
     assert settings.ai_ready is False
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("", []),
+        ("[]", []),
+        ("https://admin.example, https://teacher.example", ["https://admin.example", "https://teacher.example"]),
+    ],
+)
+def test_cors_origins_accept_production_environment_formats(monkeypatch, raw: str, expected: list[str]) -> None:
+    monkeypatch.setenv("CORS_ORIGINS", raw)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.cors_origins == expected
+
+
 @pytest.mark.parametrize("app_env", ["pilot", "production"])
 def test_deployment_environments_reject_development_secret(app_env: str) -> None:
     with pytest.raises(ValidationError, match="JWT_SECRET must be changed"):
