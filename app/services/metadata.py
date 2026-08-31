@@ -184,7 +184,11 @@ def infer_chapter(text: str, metadata: dict | None = None) -> str | None:
         segments = [segment.strip() for segment in re.split(r"[\\/|]", decoded) if segment.strip()]
         for segment in reversed(segments or [decoded]):
             title = re.sub(r"\.(docx|pdf|txt|md|pptx)$", "", segment, flags=re.IGNORECASE).strip()
-            if re.search(r"全册.*公式|公式.*全册|公式(?:汇总|大全|手册)", title):
+            if re.search(
+                r"全册.*公式|公式.*全册|公式(?:汇总|大全|手册)|(?:选择性)?必修第?[一二三四五六0-9]*册.*公式\s*ocr",
+                title,
+                re.IGNORECASE,
+            ):
                 return "全册公式索引"
             title = re.sub(r"^第\s*\d+\s*讲\s*", "", title)
             title = re.sub(r"^拓展\s*[一二三四五六七八九十0-9]+\s*[:：]?\s*", "", title)

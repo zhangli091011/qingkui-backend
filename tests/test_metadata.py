@@ -39,3 +39,4 @@ def test_explicit_title_is_not_masked_by_unhelpful_filename() -> None:
 def test_special_topic_and_full_book_formula_titles_are_inferred() -> None:
     assert infer_chapter("专题7.10 随机变量及其分布（知识清单）") == "7.10 随机变量及其分布"
     assert infer_chapter("高中数学全册公式OCR汇总.pdf") == "全册公式索引"
+    assert infer_chapter("高中数学必修第一册（人教A版）·公式OCR") == "全册公式索引"
