@@ -72,6 +72,7 @@ from app.services.content_governance import graph_integrity_report, governance_r
 from app.services.mistakes import delete_assets, enqueue_ocr_task
 from app.services.operational_alerts import build_operational_alert_summary
 from app.services.pilot import anonymous_user_id, build_pilot_report
+from app.services.release_readiness import build_release_readiness_report
 from app.services.user_lifecycle import erase_user_account
 
 
@@ -168,6 +169,11 @@ def get_content_governance_report(
     textbook_version: str | None = None,
 ) -> dict:
     return governance_report(db, subject=subject, grade=grade, textbook_version=textbook_version)
+
+
+@router.get("/release-readiness")
+def get_release_readiness_report(db: DbSession, _admin: AdminUser) -> dict:
+    return build_release_readiness_report(db)
 
 
 @router.get("/knowledge/review-queue", response_model=KnowledgeReviewQueueResponse)

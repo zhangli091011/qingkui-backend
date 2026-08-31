@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -40,6 +41,14 @@ def _load_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("Evaluation file must contain one JSON object")
     return value
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def load_dataset(path: Path) -> dict[str, Any]:
@@ -186,7 +195,10 @@ def run_human_evaluation(
         "dataset": {
             "id": dataset["id"],
             "version": dataset.get("version", 1),
+            "source_sha256": _file_sha256(dataset_path),
             "subject": dataset["subject"],
+            "grade": dataset.get("grade"),
+            "textbook_version": dataset.get("textbook_version"),
             "review_status": dataset.get("review_status", "draft"),
             "thresholds": dataset.get("thresholds", {}),
         },
@@ -315,6 +327,8 @@ def score_human_evaluation(
     report = {
         "schema": SCORE_SCHEMA,
         "scored_at": _utc_now(),
+        "reviewed_run_sha256": _file_sha256(run_path),
+        "reviewers": sorted({review["reviewer"].strip() for _, review in completed}),
         "dataset": run.get("dataset", {}),
         "case_count": total_count,
         "reviewed_count": reviewed_count,

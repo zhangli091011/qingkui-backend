@@ -51,6 +51,9 @@ services:
       CONTENT_LAUNCH_SUBJECT: ${CONTENT_LAUNCH_SUBJECT:-数学}
       CONTENT_LAUNCH_GRADE: ${CONTENT_LAUNCH_GRADE:-高一}
       CONTENT_LAUNCH_TEXTBOOK_VERSION: ${CONTENT_LAUNCH_TEXTBOOK_VERSION:-人教A版}
+      RELEASE_EVIDENCE_DIR: /release-evidence
+      RELEASE_MIN_APPROVED_NODES: ${RELEASE_MIN_APPROVED_NODES:-300}
+      RELEASE_RECOVERY_MAX_AGE_DAYS: ${RELEASE_RECOVERY_MAX_AGE_DAYS:-30}
       OSS_BUCKET: ${OSS_BUCKET:-qingkui-yuhua}
       OSS_ENDPOINT: ${OSS_ENDPOINT:-https://oss-cn-qingdao.aliyuncs.com}
       OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:-}
@@ -77,6 +80,7 @@ services:
       CONTRIBUTION_QUEUE_NAME: ${CONTRIBUTION_QUEUE_NAME:-qingkui-contributions}
     volumes:
       - ${QINGKUI_VECTOR_DATA_HOST_PATH:-./data}:/data:ro
+      - ${QINGKUI_RELEASE_EVIDENCE_HOST_PATH:-./release-evidence}:/release-evidence:ro
     depends_on:
       vector-sync:
         condition: service_completed_successfully

@@ -116,6 +116,7 @@ DEEPSEEK_MODEL=deepseek-v4-flash
 |---|---|
 | 节点/章节 | `GET /api/admin/knowledge/nodes`、`/chapters` |
 | 内容治理报告 | `GET /api/admin/knowledge/governance` |
+| 统一发布就绪报告 | `GET /api/admin/release-readiness` |
 | 关系 CRUD | `GET/POST/PATCH/DELETE /api/admin/knowledge/edges` |
 | 版本历史与状态 | `GET .../versions`、`POST .../publish`、`/withdraw`、`/restore` |
 | 反馈审核 | `GET/PATCH /api/admin/feedback` |
@@ -127,6 +128,8 @@ V2 学校、班级、邀请码、逐人试点准入和匿名教师概览已具�
 所有业务接口使用 `Authorization: Bearer <access_token>`。DeepSeek 密钥只保存在服务端环境变量中。普通问答消耗 1 额度，完整解析消耗 2 额度；供应商失败时数据库事务回滚，不扣额度。
 
 正式 AI 质量门使用人工复核评测，而不是关键词命中率。运行与评分命令、字段定义和首发数学阈值见 `docs/AI_EVALUATION.md`；种子集位于 `config/evaluation/math-v1.json`。
+
+发布前使用 `python -m app.cli release-readiness-report --strict` 汇总配置、迁移、内容、人评、恢复演练、正式签名 APK 和 C9 真机证据。证据目录、模板和交叉校验规则见 `docs/RELEASE_READINESS.md`。
 
 ## 数据库与部署
 

@@ -40,10 +40,12 @@ chmod 750 deploy/recovery-drill.sh
   /opt/qingkui/recovery-reports/20260830.json
 ```
 
+脚本也接受 `pg_dump -Fc` 生成的 `.dump` 自定义格式备份；两种格式都必须同时存在 `<备份路径>.sha256` 校验文件。
+
 脚本会：
 
-1. 校验 gzip 和备份 SHA-256。
-2. 创建一次性 PostgreSQL 17 容器及临时卷并完整恢复。
+1. 校验 gzip，并强制对照同名 `.sha256` 文件核验备份摘要。
+2. 创建一次性 PostgreSQL 17 容器及临时卷并完整恢复；用户、文档、分块或节点核心表为空会直接失败。
 3. 查询 Alembic 版本与用户、文档、分块、节点、消息数量。
 4. 把 OSS 当前和上一版索引下载到 `/tmp`，分别校验 SHA-256。
 5. 可选执行 4,000+ 原始文档的 OSS 全量对象审计。

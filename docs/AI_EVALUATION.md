@@ -65,6 +65,8 @@ python -m app.cli qa-eval-score `
 4. 评分报告；
 5. 使用的后端提交、Prompt 版本、知识索引 SHA-256 和审核人。
 
+进入统一发布证据目录时，分别保存为 `human-eval-dataset.json`、`human-eval-reviewed-run.json` 和 `human-eval-score.json`。运行文件记录评测集 SHA-256，评分文件记录被复核运行 SHA-256 和审核员集合；`release-readiness-report` 会重新计算并核对这条哈希链。
+
 ## 九学科分期
 
 当前只有数学属于首发正式学科。其他学科可以建立 `draft` 种子集和运行回归，但在来源授权、内容审核、人工评测和试点结论齐备前，不得用数学评测结果代替，也不得宣称达到正式发布门。

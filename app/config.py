@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     content_launch_grade: str = "高一"
     content_launch_textbook_version: str = "人教A版"
     content_enforce_launch_scope: bool = False
+    release_evidence_dir: str = "./release-evidence"
+    release_min_approved_nodes: int = 300
+    release_recovery_max_age_days: int = 30
 
     # Optional Alibaba Cloud OSS migration/sync settings. Credentials are
     # intentionally read only from the process environment.
@@ -117,6 +120,20 @@ class Settings(BaseSettings):
             if raw.startswith("["):
                 return json.loads(raw)
             return [item.strip() for item in raw.split(",") if item.strip()]
+        return value
+
+    @field_validator("release_min_approved_nodes")
+    @classmethod
+    def validate_release_minimum_nodes(cls, value: int) -> int:
+        if value < 0 or value > 10_000:
+            raise ValueError("RELEASE_MIN_APPROVED_NODES must be between 0 and 10000")
+        return value
+
+    @field_validator("release_recovery_max_age_days")
+    @classmethod
+    def validate_recovery_age(cls, value: int) -> int:
+        if value < 1 or value > 365:
+            raise ValueError("RELEASE_RECOVERY_MAX_AGE_DAYS must be between 1 and 365")
         return value
 
     @model_validator(mode="after")

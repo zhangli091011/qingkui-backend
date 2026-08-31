@@ -320,6 +320,48 @@ def notify_operational_alerts_file(*, dry_run: bool) -> None:
     print(json.dumps({"notification": result, "payload": webhook_payload(summary)}, ensure_ascii=False, indent=2))
 
 
+def release_evidence_templates_file(output_dir: str, *, overwrite: bool) -> None:
+    from app.services.release_readiness import write_evidence_templates
+
+    output = Path(output_dir).resolve()
+    written = write_evidence_templates(output, overwrite=overwrite)
+    print(
+        json.dumps(
+            {
+                "output_dir": str(output),
+                "written": [str(path) for path in written],
+                "skipped_existing": len(list(output.glob("*.json"))) - len(written),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+def release_readiness_report_file(
+    output: str | None,
+    *,
+    evidence_dir: str | None,
+    strict: bool,
+) -> None:
+    from app.services.release_readiness import build_release_readiness_report
+
+    Base.metadata.create_all(bind=engine)
+    with SessionLocal() as db:
+        report = build_release_readiness_report(
+            db,
+            evidence_dir=Path(evidence_dir).resolve() if evidence_dir else None,
+        )
+    payload = json.dumps(report, ensure_ascii=False, indent=2)
+    if output:
+        output_path = Path(output).resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(payload + "\n", encoding="utf-8")
+    print(payload)
+    if strict and not report["ready"]:
+        raise SystemExit(1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -405,6 +447,19 @@ def main() -> None:
         help="send active model/OCR alerts to the configured webhook",
     )
     alert_command.add_argument("--dry-run", action="store_true")
+    evidence_command = subparsers.add_parser(
+        "release-evidence-templates",
+        help="create non-passing templates for human and device release evidence",
+    )
+    evidence_command.add_argument("--output-dir", default="release-evidence")
+    evidence_command.add_argument("--overwrite", action="store_true")
+    readiness_command = subparsers.add_parser(
+        "release-readiness-report",
+        help="combine config, database, content and external evidence into one release gate",
+    )
+    readiness_command.add_argument("--evidence-dir")
+    readiness_command.add_argument("--output")
+    readiness_command.add_argument("--strict", action="store_true")
     qa_command = subparsers.add_parser("qa-console", help="interactive streaming AI QA tester")
     qa_command.add_argument("--mode", choices=("knowledge", "problem", "error", "review", "explore", "verify"), default="knowledge")
     qa_command.add_argument("--help-level", choices=("keyword", "next_step", "approach", "full", "conclusion"), default="approach")
@@ -491,6 +546,14 @@ def main() -> None:
         import_wikibooks_content(args.pages_per_topic)
     elif args.command == "operational-alert-notify":
         notify_operational_alerts_file(dry_run=args.dry_run)
+    elif args.command == "release-evidence-templates":
+        release_evidence_templates_file(args.output_dir, overwrite=args.overwrite)
+    elif args.command == "release-readiness-report":
+        release_readiness_report_file(
+            args.output,
+            evidence_dir=args.evidence_dir,
+            strict=args.strict,
+        )
     elif args.command == "qa-console":
         from app.interactive_qa import ConsoleState, HELP_NAMES, MODE_NAMES, _run_question, run_console
 

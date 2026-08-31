@@ -7,6 +7,8 @@
 - `versionCode` 每次发布严格递增；同一 applicationId 不得更换签名。
 - Debug 包不得进入学生 MDM 正式应用目录。
 
+所有代码、内容和外部验收完成后，必须执行 `docs/RELEASE_READINESS.md` 的严格报告。`release-readiness-report --strict` 返回非零时不得扩大 MDM 投放。
+
 ## 发布通道
 
 1. CI 生成未签名/测试 APK并运行测试。

@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 usage() {
-  echo "Usage: $0 [--full-oss] <backup.sql.gz> [report.json]" >&2
+  echo "Usage: $0 [--full-oss] <backup.sql.gz|backup.dump> [report.json]" >&2
 }
 
 full_oss=0
@@ -22,11 +22,17 @@ fi
 
 backup_input=$1
 report_input=${2:-}
-if [[ ! -f "$backup_input" || "$backup_input" != *.sql.gz ]]; then
-  echo "Backup must be an existing .sql.gz file" >&2
+if [[ ! -f "$backup_input" || ( "$backup_input" != *.sql.gz && "$backup_input" != *.dump ) ]]; then
+  echo "Backup must be an existing .sql.gz or PostgreSQL custom-format .dump file" >&2
   exit 2
 fi
 backup=$(realpath -e -- "$backup_input")
+checksum_input="${backup_input}.sha256"
+if [[ ! -f "$checksum_input" ]]; then
+  echo "Backup checksum file is required: $checksum_input" >&2
+  exit 2
+fi
+checksum_file=$(realpath -e -- "$checksum_input")
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 token="${stamp,,}-$$"
 container="qingkui-recovery-postgres-${token}"
@@ -43,9 +49,22 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "[1/5] Verifying gzip archive"
-gzip -t -- "$backup"
+echo "[1/5] Verifying backup archive and checksum"
+if [[ "$backup" == *.sql.gz ]]; then
+  gzip -t -- "$backup"
+else
+  archive_header=$(head -c 5 -- "$backup")
+  if [[ "$archive_header" != "PGDMP" ]]; then
+    echo "Custom-format backup does not have a PGDMP header" >&2
+    exit 1
+  fi
+fi
 backup_sha256=$(sha256sum -- "$backup" | awk '{print $1}')
+expected_backup_sha256=$(awk 'NR == 1 {print tolower($1)}' "$checksum_file")
+if [[ ! "$expected_backup_sha256" =~ ^[0-9a-f]{64}$ || "$backup_sha256" != "$expected_backup_sha256" ]]; then
+  echo "Backup SHA-256 does not match $checksum_file" >&2
+  exit 1
+fi
 
 echo "[2/5] Starting isolated PostgreSQL"
 docker volume create "$volume" >/dev/null
@@ -64,7 +83,11 @@ done
 docker exec "$container" pg_isready -U qingkui -d qingkui >/dev/null
 
 echo "[3/5] Restoring backup into isolated database"
-gzip -dc -- "$backup" | docker exec -i "$container" psql -v ON_ERROR_STOP=1 -U qingkui -d qingkui >/dev/null
+if [[ "$backup" == *.sql.gz ]]; then
+  gzip -dc -- "$backup" | docker exec -i "$container" psql -v ON_ERROR_STOP=1 -U qingkui -d qingkui >/dev/null
+else
+  docker exec -i "$container" pg_restore --exit-on-error --no-owner --no-privileges -U qingkui -d qingkui < "$backup"
+fi
 db_metrics=$(docker exec "$container" psql -v ON_ERROR_STOP=1 -U qingkui -d qingkui -Atc \
   "select json_build_object(
     'alembic_version', (select version_num from alembic_version limit 1),
@@ -74,6 +97,18 @@ db_metrics=$(docker exec "$container" psql -v ON_ERROR_STOP=1 -U qingkui -d qing
     'nodes', (select count(*) from knowledge_nodes),
     'messages', (select count(*) from messages)
   );")
+"$python_bin" - "$db_metrics" <<'PY'
+import json
+import sys
+
+metrics = json.loads(sys.argv[1])
+required_nonempty = ("users", "documents", "chunks", "nodes")
+missing = [name for name in required_nonempty if int(metrics.get(name) or 0) <= 0]
+if not metrics.get("alembic_version"):
+    raise SystemExit("Restored database has no Alembic revision")
+if missing:
+    raise SystemExit("Restored production backup has empty core tables: " + ", ".join(missing))
+PY
 
 echo "[4/5] Verifying current and previous OSS vector indexes in temporary storage"
 docker compose -p qingkui run --rm \
@@ -97,13 +132,13 @@ else
   echo "[5/5] Full OSS document audit skipped (use --full-oss to enable)"
 fi
 
-"$python_bin" - "$report" "$stamp" "$backup" "$backup_sha256" "$db_metrics" \
+"$python_bin" - "$report" "$stamp" "$backup" "$checksum_file" "$backup_sha256" "$db_metrics" \
   "$current_sha256" "$previous_sha256" "$oss_status" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-output, stamp, backup, backup_sha256, db_metrics, current, previous, oss_status = sys.argv[1:]
+output, stamp, backup, checksum_file, backup_sha256, db_metrics, current, previous, oss_status = sys.argv[1:]
 report = {
     "schema": "qingkui-recovery-drill-v1",
     "completed_at": stamp,
@@ -111,6 +146,7 @@ report = {
     "production_data_modified": False,
     "database": {
         "backup": backup,
+        "checksum_file": checksum_file,
         "backup_sha256": backup_sha256,
         "isolated_restore": True,
         "metrics": json.loads(db_metrics),

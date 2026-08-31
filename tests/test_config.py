@@ -91,3 +91,10 @@ def test_release_readiness_lists_missing_operational_gates() -> None:
         "retrieval_provider_not_ready",
         "private_object_storage_not_ready",
     }
+
+
+def test_release_readiness_thresholds_are_bounded() -> None:
+    with pytest.raises(ValidationError, match="RELEASE_MIN_APPROVED_NODES"):
+        Settings(_env_file=None, release_min_approved_nodes=-1)
+    with pytest.raises(ValidationError, match="RELEASE_RECOVERY_MAX_AGE_DAYS"):
+        Settings(_env_file=None, release_recovery_max_age_days=0)

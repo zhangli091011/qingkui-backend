@@ -19,6 +19,9 @@ def _dataset() -> dict:
         "id": "math-test-v1",
         "version": 1,
         "subject": "数学",
+        "grade": "高一",
+        "textbook_version": "人教A版",
+        "review_status": "approved",
         "thresholds": {
             "minimum_review_coverage": 1,
             "minimum_execution_success_rate": 1,
@@ -58,6 +61,9 @@ def _run() -> dict:
             "id": dataset["id"],
             "version": dataset["version"],
             "subject": dataset["subject"],
+            "grade": dataset["grade"],
+            "textbook_version": dataset["textbook_version"],
+            "review_status": dataset["review_status"],
             "thresholds": dataset["thresholds"],
         },
         "results": [
@@ -155,6 +161,8 @@ def test_completed_human_reviews_produce_release_metrics(tmp_path: Path) -> None
         "helpfulness_mean": 4.5,
     }
     assert report["release_gate_passed"] is True
+    assert report["reviewers"] == ["math-reviewer-01"]
+    assert len(report["reviewed_run_sha256"]) == 64
     assert json.loads((tmp_path / "score.json").read_text(encoding="utf-8"))["schema"]
 
 
