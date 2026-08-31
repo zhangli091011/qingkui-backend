@@ -34,6 +34,8 @@ class AiStreamState:
     output_tokens: int | None = None
     provider: str = ""
     model: str = ""
+    finish_reason: str | None = None
+    truncated: bool = False
 
 
 MODE_GUIDANCE = {
@@ -176,6 +178,28 @@ def _parse_json(text: str) -> StructuredAnswer:
     try:
         return StructuredAnswer.model_validate(json.loads(cleaned))
     except (json.JSONDecodeError, ValueError):
+        # Providers can stop at max_tokens in the middle of a JSON string.
+        # Recover the two user-visible fields when possible instead of
+        # rendering the serialization envelope as if it were an answer.
+        def partial_string(field: str) -> str:
+            match = re.search(rf'"{field}"\s*:\s*"((?:\\.|[^"\\])*)', cleaned, re.DOTALL)
+            if not match:
+                return ""
+            try:
+                return json.loads(f'"{match.group(1)}"')
+            except json.JSONDecodeError:
+                return match.group(1)
+
+        conclusion = partial_string("conclusion")
+        explanation = partial_string("explanation")
+        if conclusion or explanation:
+            return StructuredAnswer(
+                conclusion=conclusion or "回答未完整生成。",
+                explanation=explanation or "模型输出在达到长度上限前被截断。",
+                evidence=[],
+                next_step="点击“重新回答”获取完整内容。",
+                uncertain=True,
+            )
         return StructuredAnswer(
             conclusion=cleaned[:600],
             explanation=cleaned,
@@ -310,7 +334,12 @@ def stream_answer_text(
                     choices = data.get("choices") or []
                     if not choices:
                         continue
-                    chunk = choices[0].get("delta", {}).get("content") or ""
+                    choice = choices[0]
+                    finish_reason = choice.get("finish_reason")
+                    if finish_reason:
+                        state.finish_reason = finish_reason
+                        state.truncated = finish_reason == "length"
+                    chunk = choice.get("delta", {}).get("content") or ""
                     if chunk:
                         state.content += chunk
                         yield chunk

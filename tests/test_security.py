@@ -211,6 +211,14 @@ def test_retrieved_prompt_injection_cannot_close_context_boundary() -> None:
     assert ai.PROMPT_VERSION == "qa-v2"
 
 
+def test_truncated_json_answer_recovers_conclusion() -> None:
+    parsed = ai._parse_json('{"conclusion":"导数公式是 f\'(x)=1/(x\\ln a)","explanation":"由换')
+
+    assert parsed.uncertain is True
+    assert parsed.conclusion.startswith("导数公式是")
+    assert "重新回答" in parsed.next_step
+
+
 def test_qa_input_safety_blocks_before_charge_and_logs_only_fingerprint(client: TestClient) -> None:
     auth, headers = _register(client, "safety_input")
     session = client.post("/api/qa/sessions", json={"mode": "knowledge"}, headers=headers).json()
@@ -405,3 +413,28 @@ def test_stream_cancel_before_generation_does_not_charge_or_persist(client: Test
     assert record is not None and record.status == "failed"
     assert messages == 0
     assert ledgers == 0
+
+
+def test_stream_marks_provider_length_truncation(client: TestClient, monkeypatch) -> None:
+    _, headers = _register(client, "stream_truncated")
+    session = client.post("/api/qa/sessions", json={"mode": "knowledge"}, headers=headers).json()
+
+    def truncated_stream(_question, _mode, _help_level, _nodes, _chunks, state):
+        state.provider = "test"
+        state.model = "length-test"
+        state.truncated = True
+        state.content = "结论未完成"
+        yield state.content
+
+    monkeypatch.setattr("app.routers.qa.stream_answer_text", truncated_stream)
+    response = client.post(
+        f"/api/qa/sessions/{session['id']}/messages/stream",
+        json={"content": "解释二次函数", "help_level": "approach"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert "回答达到长度上限" in response.text
+    done = _done_payload(response.text)
+    assert done["assistant_message"]["structured_content"]["truncated"] is True
+    assert "回答达到长度上限" in done["assistant_message"]["content"]

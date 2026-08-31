@@ -455,6 +455,13 @@ def _stream_message(
             tail = safety_filter.finish()
             if tail:
                 yield _sse("delta", {"content": tail})
+            if state.truncated:
+                # Keep the persisted answer honest when the provider stops at
+                # max_tokens. The client can offer a retry instead of showing
+                # an indistinguishable partial answer.
+                notice = "\n\n（回答达到长度上限，内容可能不完整，可点击“重新回答”。）"
+                state.content += notice
+                yield _sse("delta", {"content": notice})
         except ContentSafetyViolation as exc:
             db.rollback()
             fail_idempotency(db, idempotency_request_id)
@@ -512,7 +519,14 @@ def _stream_message(
             conversation_id=conversation.id,
             role="assistant",
             content=state.content,
-            structured_content=None,
+            structured_content={
+                "conclusion": state.content,
+                "explanation": "",
+                "evidence": [item.chunk.document.title for item in chunks[:3]] or [node.name for node in nodes[:3]],
+                "next_step": "点击“重新回答”获取完整内容。" if state.truncated else "继续提出一个具体问题。",
+                "uncertain": state.truncated,
+                "truncated": state.truncated,
+            },
             citations=citations,
             linked_node_ids=[node.id for node in nodes],
             provider=state.provider,

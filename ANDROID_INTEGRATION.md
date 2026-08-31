@@ -42,6 +42,8 @@
 - `done`：返回完整 `QaResult`，此时更新余额、消息 ID 和引用。
 - `error`：返回 `status/detail`；失败不会落库或扣额度。
 
+当模型达到 `max_tokens` 时，服务端会在 `delta` 末尾追加“回答达到长度上限”提示，并在 `assistant_message.structured_content.truncated=true` 中标记；客户端应保留回答并提供重新回答入口。
+
 服务端只在 AI 流完整结束后写入消息并扣费。客户端断线时应移除半截回答并允许重试。
 
 `mode`：`knowledge`、`problem`、`error`、`review`、`explore`、`verify`。
@@ -49,6 +51,8 @@
 `help_level`：`keyword`、`next_step`、`approach`、`full`、`conclusion`。
 
 完整解析消耗 2 额度，其余当前消耗 1 额度。HTTP 502 表示模型失败且未扣费；402 表示额度不足；503 表示服务端未配置模型。
+
+回答卡片的“内容有误”应先让用户填写至少 2 个字的错误说明，再调用 `POST feedback`：`category=answer_error`、`message_id=<assistant_message.id>`，说明放入 `content`。其余“有帮助”“没帮助”“标记复习”可直接提交；所有反馈都只允许访问当前用户自己的回答。
 
 ## 图谱与学习状态
 
