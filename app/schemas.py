@@ -411,6 +411,7 @@ class OcrTaskResponse(ApiModel):
     formulas: list[dict]
     confidence: float | None
     requires_review: bool
+    review_reasons: list[str] = Field(default_factory=list)
     error_code: str | None
     error_message: str | None
     queued_at: datetime | None

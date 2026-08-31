@@ -658,6 +658,7 @@ class OcrTask(Base):
     formulas: Mapped[list[dict]] = mapped_column(JSON, default=list)
     confidence: Mapped[float | None] = mapped_column(nullable=True)
     requires_review: Mapped[bool] = mapped_column(Boolean, default=True)
+    review_reasons: Mapped[list[str]] = mapped_column(JSON, default=list)
     error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     error_message: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     queued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

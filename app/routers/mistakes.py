@@ -454,6 +454,11 @@ def retry_ocr_task(mistake_id: str, task_id: str, db: DbSession, user: CurrentUs
     task.cancel_requested = False
     task.error_code = None
     task.error_message = None
+    task.result_text = None
+    task.formulas = []
+    task.confidence = None
+    task.requires_review = True
+    task.review_reasons = []
     task.completed_at = None
     task.queued_at = datetime.now(timezone.utc)
     db.commit()
@@ -488,7 +493,15 @@ def confirm_ocr(
     mistake.analysis_model = None
     mistake.analyzed_at = None
     task.requires_review = False
-    db.add(AuditLog(actor_user_id=user.id, action="mistake.ocr_confirmed", target_type="ocr_task", target_id=task.id))
+    db.add(
+        AuditLog(
+            actor_user_id=user.id,
+            action="mistake.ocr_confirmed",
+            target_type="ocr_task",
+            target_id=task.id,
+            details={"review_reasons": task.review_reasons},
+        )
+    )
     db.commit()
     return _owned_mistake(db, mistake_id, user.id, detail=True)
 
@@ -507,7 +520,7 @@ def analyze_mistake(mistake_id: str, db: DbSession, user: CurrentUser) -> Mistak
     if not question:
         raise HTTPException(status_code=409, detail="请先补充或确认题目文本")
     if any(task.status == "succeeded" and task.requires_review for task in mistake.ocr_tasks) and not mistake.corrected_text:
-        raise HTTPException(status_code=409, detail="低置信度 OCR 必须先人工校对")
+        raise HTTPException(status_code=409, detail="OCR 结果存在置信度或完整性风险，必须先人工校对")
     _enforce_safe_mistake_input(
         db,
         user.id,

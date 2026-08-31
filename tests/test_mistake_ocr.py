@@ -1,4 +1,5 @@
 import io
+import json
 import uuid
 
 from fastapi.testclient import TestClient
@@ -7,8 +8,14 @@ from sqlalchemy import select
 
 from app.db import SessionLocal
 from app.models import AuditLog
-from app.services.bailian import VisionOcrResult
-from app.services.mistakes import process_ocr_task, sanitize_image
+from app.services.bailian import BailianClient, VisionOcrResult, _extract_embedded_formulas, _merge_formulas
+from app.services.documents import classify_ocr_text
+from app.services.mistakes import (
+    _append_missing_formula_text,
+    ocr_review_reasons,
+    process_ocr_task,
+    sanitize_image,
+)
 
 
 def _png() -> bytes:
@@ -35,6 +42,98 @@ def _second_account(client: TestClient) -> dict[str, str]:
     )
     assert response.status_code == 201
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
+def test_embedded_latex_is_extracted_and_deduplicated():
+    text = (
+        "设 $x \\in \\mathbb{R}$，且 \\(x^2=1\\)。"
+        "重复公式为 $$x^2=1$$，命题为 \\[\\forall x \\in A\\]。"
+    )
+    embedded = _extract_embedded_formulas(text)
+    merged = _merge_formulas((("x squared equals one", "x ^ 2 = 1"),), embedded)
+
+    assert [latex for _, latex in embedded] == ["x \\in \\mathbb{R}", "x^2=1", "\\forall x \\in A"]
+    assert [latex for _, latex in merged] == ["x ^ 2 = 1", "x \\in \\mathbb{R}", "\\forall x \\in A"]
+
+
+def test_vision_response_extracts_embedded_formula_and_structure_warning(monkeypatch):
+    response_content = json.dumps(
+        {
+            "text": "6. 已知 \\(x \\in \\mathbb{R}\\)，求集合。",
+            "formulas": [],
+            "confidence": "0.90",
+            "structure": {"content_may_be_missing": True, "uncertain": False},
+        },
+        ensure_ascii=False,
+    )
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": response_content}}]}
+
+    class FakeHttpClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def post(self, *_args, **_kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr("app.services.bailian.settings.dashscope_api_key", "test-key")
+    monkeypatch.setattr("app.services.bailian.httpx.Client", FakeHttpClient)
+    result = BailianClient().recognize_math_page(_png())
+
+    assert result.confidence == 0.90
+    assert result.formulas == (("x \\in \\mathbb{R}", "x \\in \\mathbb{R}"),)
+    assert result.review_warnings == ("model_detected_omission",)
+
+
+def test_formula_text_is_not_appended_when_already_embedded():
+    text = "已知 \\(x^2=1\\)，求实数 x。"
+    combined = _append_missing_formula_text(text, (("x squared equals one", "x^2=1"),))
+
+    assert combined == text
+    assert combined.count("x^2=1") == 1
+
+
+def test_document_ocr_keeps_formula_in_place_without_duplicate_chunk():
+    parts = classify_ocr_text(
+        "已知 \\(x^2=1\\)，求 x。",
+        (("x squared equals one", "x ^ 2 = 1"),),
+    )
+    formulas = [part for part in parts if part.content_type == "formula"]
+
+    assert len(formulas) == 1
+    assert formulas[0].formula_latex == "x^2=1"
+    assert formulas[0].formula_source == "bailian_vision_ocr"
+
+
+def test_document_formula_classifier_accepts_set_and_quantifier_notation():
+    parts = classify_ocr_text(
+        "命题为 \\(\\forall x \\in \\mathbb{R}\\)，结论成立。",
+        (("for every real x", "\\forall x \\in \\mathbb{R}"),),
+    )
+    formulas = [part for part in parts if part.content_type == "formula"]
+
+    assert len(formulas) == 1
+    assert formulas[0].formula_source == "bailian_vision_ocr"
+
+
+def test_structural_review_reasons_override_high_confidence():
+    reasons = ocr_review_reasons("5. 已知集合 A。\n7. 判断下列命题：（1）命题甲；（3）命题丙。", 0.90)
+
+    assert "low_confidence" not in reasons
+    assert "multiple_questions" in reasons
+    assert "question_number_gap" in reasons
+    assert "subquestion_number_gap" in reasons
 
 
 def test_image_sanitizer_rejects_disguised_and_oversized_images(monkeypatch):
@@ -108,6 +207,7 @@ def test_upload_ocr_confirm_and_practice_lifecycle(client: TestClient, account, 
     assert result.status_code == 200
     assert result.json()["status"] == "succeeded"
     assert result.json()["requires_review"] is True
+    assert result.json()["review_reasons"] == ["low_confidence"]
     assert result.json()["formulas"][0]["latex"] == "x^2"
     balance_before_review = client.get("/api/credits", headers=headers).json()["balance"]
     blocked_analysis = client.post(f"/api/mistakes/{mistake['id']}/analyze", headers=headers)

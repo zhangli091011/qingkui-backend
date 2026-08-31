@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import KnowledgeChunk, KnowledgeDocument
-from app.services.bailian import BailianClient
+from app.services.bailian import BailianClient, is_math_formula as is_latex_math_formula
 from app.services.knowledge import build_vector_index
 from app.subjects import SUBJECTS, infer_subject, normalize_subject
 
@@ -56,6 +56,7 @@ class OcrPage:
     text: str
     confidence: float | None
     formulas: tuple[tuple[str, str], ...] = ()
+    review_warnings: tuple[str, ...] = ()
 
 
 # Supports Markdown/LaTeX delimiters emitted by PDF-to-text and authored notes.
@@ -72,14 +73,7 @@ FORMULA_HINT = re.compile(
 
 def is_math_formula(latex: str) -> bool:
     """Reject prose wrapped as LaTeX text while retaining real mathematical expressions."""
-    normalized = latex.strip()
-    if not normalized:
-        return False
-    if re.fullmatch(r"\\text\s*\{.*\}", normalized, flags=re.DOTALL):
-        return False
-    return bool(
-        re.search(r"[=<>≤≥±√∑∫^_+*/]|\\(?:frac|sqrt|sum|int|lim|sin|cos|tan|log|ln|alpha|beta|gamma|delta|theta)", normalized)
-    )
+    return is_latex_math_formula(latex)
 
 
 def extract_text(path: Path) -> str:
@@ -228,9 +222,32 @@ def _ocr_tsv(
 def classify_ocr_text(text: str, formulas: tuple[tuple[str, str], ...] = ()) -> list[ClassifiedPart]:
     """Combine plain OCR prose with formula OCR results as typed chunks."""
     parts = classify_parts(text)
+    structured_keys = {
+        re.sub(r"\s+", "", latex).strip("$") for _, latex in formulas if latex.strip()
+    }
+    embedded_keys: set[str] = set()
+    for index, part in enumerate(parts):
+        if part.content_type != "formula" or not part.formula_latex:
+            continue
+        key = re.sub(r"\s+", "", part.formula_latex).strip("$")
+        if key not in structured_keys:
+            continue
+        embedded_keys.add(key)
+        parts[index] = ClassifiedPart(
+            part.start,
+            part.end,
+            part.content,
+            "formula",
+            part.formula_latex,
+            "bailian_vision_ocr",
+        )
     cursor = len(text)
     for raw, latex in formulas:
+        key = re.sub(r"\s+", "", latex).strip("$")
+        if not key or key in embedded_keys:
+            continue
         parts.append(ClassifiedPart(cursor, cursor + len(raw), raw, "formula", latex, "bailian_vision_ocr"))
+        embedded_keys.add(key)
         cursor += len(raw) + 1
     return parts
 
@@ -274,7 +291,15 @@ def ocr_scanned_pdf(
                 if vision_client:
                     recognized = vision_client.recognize_math_page(pixmap.tobytes("png"))
                     if recognized.text.strip() or recognized.formulas:
-                        pages.append(OcrPage(page_number, normalize_text(recognized.text), None, recognized.formulas))
+                        pages.append(
+                            OcrPage(
+                                page_number,
+                                normalize_text(recognized.text),
+                                recognized.confidence,
+                                recognized.formulas,
+                                recognized.review_warnings,
+                            )
+                        )
                     continue
                 image_path = temporary_root / f"page-{page_number}.png"
                 pixmap.save(image_path)
@@ -535,6 +560,11 @@ def import_scanned_pdf_document(
                 "language": language,
                 "dpi": dpi,
                 "pages": [page.page_number for page in pages],
+                "review_warnings": [
+                    {"page": page.page_number, "reasons": list(page.review_warnings)}
+                    for page in pages
+                    if page.review_warnings
+                ],
             },
         },
     )

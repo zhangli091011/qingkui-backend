@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -20,6 +21,8 @@ from app.services.object_storage import delete_private_object, get_private_bytes
 
 ALLOWED_IMAGE_FORMATS = {"JPEG": ("image/jpeg", "jpg"), "PNG": ("image/png", "png"), "WEBP": ("image/webp", "webp")}
 _LOCAL_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="mistake-ocr")
+_PRIMARY_QUESTION_PATTERN = re.compile(r"(?m)^\s*(\d{1,2})\s*[.、．]\s*")
+_SUBQUESTION_PATTERN = re.compile(r"[（(]\s*(\d{1,2})\s*[）)]")
 
 
 @dataclass(frozen=True)
@@ -30,6 +33,39 @@ class SanitizedImage:
     width: int
     height: int
     checksum_sha256: str
+
+
+def _has_number_gap(numbers: list[int]) -> bool:
+    ordered = sorted(set(numbers))
+    return any(current - previous > 1 for previous, current in zip(ordered, ordered[1:]))
+
+
+def ocr_review_reasons(text: str, confidence: float) -> list[str]:
+    reasons: list[str] = []
+    if confidence < settings.ocr_review_threshold:
+        reasons.append("low_confidence")
+    if len(re.sub(r"\s+", "", text)) < 12:
+        reasons.append("sparse_text")
+
+    primary_numbers = [int(value) for value in _PRIMARY_QUESTION_PATTERN.findall(text)]
+    if len(set(primary_numbers)) > 1:
+        reasons.append("multiple_questions")
+    if _has_number_gap(primary_numbers):
+        reasons.append("question_number_gap")
+
+    subquestion_numbers = [int(value) for value in _SUBQUESTION_PATTERN.findall(text)]
+    if _has_number_gap(subquestion_numbers):
+        reasons.append("subquestion_number_gap")
+    return reasons
+
+
+def _append_missing_formula_text(text: str, formulas: tuple[tuple[str, str], ...]) -> str:
+    compact_text = re.sub(r"\s+", "", text)
+    missing = [latex for _, latex in formulas if re.sub(r"\s+", "", latex) not in compact_text]
+    if not missing:
+        return text.strip()
+    rendered = "\n".join(f"\\[{latex}\\]" for latex in missing)
+    return f"{text.strip()}\n{rendered}".strip()
 
 
 def sanitize_image(payload: bytes) -> SanitizedImage:
@@ -140,16 +176,14 @@ def process_ocr_task(task_id: str) -> None:
     try:
         payload = get_private_bytes(object_key)
         result = BailianClient().recognize_math_page(payload, mime_type)
-        combined = result.text.strip()
-        if result.formulas:
-            rendered = "\n".join(f"\\[{latex}\\]" for _, latex in result.formulas)
-            combined = f"{combined}\n{rendered}".strip()
+        combined = _append_missing_formula_text(result.text, result.formulas)
         if not combined:
             raise RuntimeError("OCR 未识别出有效内容")
         confidence = result.confidence
         if confidence is None:
             confidence = 0.9 if len(combined) >= 12 else 0.65
         formulas = [{"raw": raw, "latex": latex} for raw, latex in result.formulas]
+        review_reasons = list(dict.fromkeys((*ocr_review_reasons(combined, confidence), *result.review_warnings)))
     except Exception as exc:
         with SessionLocal() as db:
             task = db.get(OcrTask, task_id)
@@ -185,6 +219,7 @@ def process_ocr_task(task_id: str) -> None:
             task.formulas = []
             task.confidence = confidence
             task.requires_review = True
+            task.review_reasons = ["content_safety_blocked"]
             task.error_code = "content_safety_blocked"
             task.error_message = "识别内容已被安全隔离，可删除图片或联系管理员复核。"
             task.completed_at = datetime.now(timezone.utc)
@@ -208,11 +243,16 @@ def process_ocr_task(task_id: str) -> None:
         task.result_text = combined
         task.formulas = formulas
         task.confidence = confidence
-        task.requires_review = confidence < settings.ocr_review_threshold
+        task.review_reasons = review_reasons
+        task.requires_review = bool(review_reasons)
         task.completed_at = datetime.now(timezone.utc)
-        if mistake is not None and not mistake.question_text:
-            mistake.question_text = combined
-            mistake.review_status = "needs_review" if task.requires_review else "recognized"
+        if mistake is not None:
+            if not mistake.question_text:
+                mistake.question_text = combined
+            if task.requires_review:
+                mistake.review_status = "needs_review"
+            elif not mistake.corrected_text:
+                mistake.review_status = "recognized"
         asset = db.get(MistakeAsset, task.asset_id)
         if asset is not None:
             asset.status = "ready"

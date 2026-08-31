@@ -1268,7 +1268,7 @@ def cancel_admin_ocr_task(task_id: str, db: DbSession, admin: SuperAdminUser) ->
     task = db.get(OcrTask, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="OCR 任务不存在")
-    if task.status in {"succeeded", "failed", "cancelled"}:
+    if task.status in {"succeeded", "failed", "cancelled", "blocked"}:
         raise HTTPException(status_code=409, detail="当前任务状态不能取消")
     task.cancel_requested = True
     if task.status == "queued":
@@ -1291,6 +1291,11 @@ def retry_admin_ocr_task(task_id: str, db: DbSession, admin: SuperAdminUser) -> 
     task.cancel_requested = False
     task.error_code = None
     task.error_message = None
+    task.result_text = None
+    task.formulas = []
+    task.confidence = None
+    task.requires_review = True
+    task.review_reasons = []
     task.completed_at = None
     task.queued_at = datetime.now(timezone.utc)
     db.add(AuditLog(actor_user_id=admin.id, action="ocr.retried", target_type="ocr_task", target_id=task.id))
