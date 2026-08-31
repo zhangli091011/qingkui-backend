@@ -160,6 +160,68 @@ def test_evidence_templates_are_non_passing_and_do_not_overwrite(tmp_path: Path)
     assert release_readiness.write_evidence_templates(tmp_path) == []
 
 
+def test_c9_evidence_builder_hashes_only_explicitly_passed_checks(tmp_path: Path) -> None:
+    apk = tmp_path / "app-release.apk"
+    apk.write_bytes(b"signed-apk-fixture")
+    checks = []
+    for check_id in sorted(release_readiness.REQUIRED_C9_CHECKS):
+        evidence = tmp_path / "c9" / f"{check_id}.txt"
+        evidence.parent.mkdir(parents=True, exist_ok=True)
+        evidence.write_text(f"human result for {check_id}\n", encoding="utf-8")
+        checks.append(
+            {
+                "id": check_id,
+                "status": "passed",
+                "notes": "人工验收通过",
+                "evidence": [f"c9/{check_id}.txt"],
+            }
+        )
+    checklist = tmp_path / "c9-checklist.json"
+    _write(
+        checklist,
+        {
+            "schema": "qingkui-c9-checklist-v1",
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "device": {"model": "Huawei Qingyun C9", "api_level": 34},
+            "network": "school-pilot",
+            "tester": "device-reviewer-01",
+            "checks": checks,
+        },
+    )
+
+    output = tmp_path / "c9-evidence.json"
+    payload = release_readiness.build_c9_evidence(checklist, apk, output)
+
+    assert payload["status"] == "passed"
+    assert payload["apk_sha256"] == _sha256(apk)
+    assert all(item["evidence"][0]["sha256"] for item in payload["checks"])
+
+
+def test_c9_evidence_builder_rejects_pass_without_attachment(tmp_path: Path) -> None:
+    apk = tmp_path / "app-release.apk"
+    apk.write_bytes(b"signed-apk-fixture")
+    checklist = tmp_path / "c9-checklist.json"
+    _write(
+        checklist,
+        {
+            "schema": "qingkui-c9-checklist-v1",
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "tester": "device-reviewer-01",
+            "checks": [
+                {"id": check_id, "status": "passed", "evidence": []}
+                for check_id in sorted(release_readiness.REQUIRED_C9_CHECKS)
+            ],
+        },
+    )
+
+    try:
+        release_readiness.build_c9_evidence(checklist, apk, tmp_path / "c9-evidence.json")
+    except ValueError as exc:
+        assert "requires evidence" in str(exc)
+    else:
+        raise AssertionError("passed checks without evidence must be rejected")
+
+
 def test_release_readiness_passes_only_with_consistent_complete_evidence(tmp_path: Path, monkeypatch) -> None:
     now = datetime.now(timezone.utc)
     _valid_evidence(tmp_path, now)

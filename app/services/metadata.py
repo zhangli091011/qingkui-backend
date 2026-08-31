@@ -159,26 +159,52 @@ def infer_chapter(text: str, metadata: dict | None = None) -> str | None:
     topic = metadata.get("topic")
     if isinstance(topic, str) and topic.strip():
         return topic.strip()[:120]
-    title = str(metadata.get("filename") or text)
-    title = re.sub(r"\.(docx|pdf|txt|md|pptx)$", "", title, flags=re.IGNORECASE)
-    title = re.sub(r"^第\s*\d+\s*讲\s*", "", title)
-    section = re.match(r"(\d+(?:\.\d+){1,2})\s*([^（(]{1,60})", title)
-    if section:
-        return f"{section.group(1)} {section.group(2).strip()}"[:120]
-    patterns = (
-        r"第\s*[一二三四五六七八九十百0-9]+\s*章\s*[:：]?\s*([^()（）|｜\\/]{2,80})",
-        r"chapter\s*[0-9ivx]+\s*[-:：]?\s*([A-Za-z][^\\/|]{2,80})",
+
+    # The caller may retry with a richer path after trying the display title.
+    # Always inspect that explicit text first instead of letting filename mask it.
+    candidates = [
+        text,
+        metadata.get("filename"),
+        metadata.get("relative_path"),
+        metadata.get("original_source_uri"),
+    ]
+    seen: set[str] = set()
+    topic_tokens = (
+        "函数", "方程", "运动", "战争", "概率", "统计", "几何", "三角", "数列", "导数",
+        "期望", "随机变量", "向量", "不等式", "集合", "复数", "排列组合", "二面角",
+        "直线与平面", "空间距离", "中点弦",
     )
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return re.sub(r"\s+", " ", match.group(1)).strip(" -_，,。.")[:120]
-    # Wikibooks and local paths commonly encode the chapter as a path segment.
-    decoded = unquote(urlparse(text).path if "://" in text else text)
-    segments = [segment.strip() for segment in re.split(r"[\\/|]", decoded) if segment.strip()]
-    for segment in reversed(segments):
-        if any(token in segment for token in ("函数", "方程", "运动", "战争", "概率", "统计", "几何", "三角", "数列", "导数", "期望")):
-            return re.sub(r"\.(docx|pdf|txt|md|pptx)$", "", segment, flags=re.IGNORECASE)[:120]
+    for raw_candidate in candidates:
+        if not isinstance(raw_candidate, str) or not raw_candidate.strip():
+            continue
+        decoded = unquote(urlparse(raw_candidate).path if "://" in raw_candidate else raw_candidate)
+        if decoded in seen:
+            continue
+        seen.add(decoded)
+        segments = [segment.strip() for segment in re.split(r"[\\/|]", decoded) if segment.strip()]
+        for segment in reversed(segments or [decoded]):
+            title = re.sub(r"\.(docx|pdf|txt|md|pptx)$", "", segment, flags=re.IGNORECASE).strip()
+            if re.search(r"全册.*公式|公式.*全册|公式(?:汇总|大全|手册)", title):
+                return "全册公式索引"
+            title = re.sub(r"^第\s*\d+\s*讲\s*", "", title)
+            title = re.sub(r"^拓展\s*[一二三四五六七八九十0-9]+\s*[:：]?\s*", "", title)
+            section = re.match(r"(\d+(?:\.\d+){1,2})\s*([^（(]{1,60})", title)
+            if section:
+                return f"{section.group(1)} {section.group(2).strip()}"[:120]
+            special = re.match(r"专题\s*(\d+(?:\.\d+)*)\s*[:：]?\s*([^（(]{2,80})", title)
+            if special:
+                return f"{special.group(1)} {special.group(2).strip()}"[:120]
+            patterns = (
+                r"第\s*[一二三四五六七八九十百0-9]+\s*章\s*[:：]?\s*([^()（）|｜\\/]{2,80})",
+                r"chapter\s*[0-9ivx]+\s*[-:：]?\s*([A-Za-z][^\\/|]{2,80})",
+            )
+            for pattern in patterns:
+                match = re.search(pattern, title, re.IGNORECASE)
+                if match:
+                    return re.sub(r"\s+", " ", match.group(1)).strip(" -_，,。.")[:120]
+            if any(token in title for token in topic_tokens):
+                cleaned = re.split(r"[（(](?:教师版|学生版|知识清单|解析|答案)", title, maxsplit=1)[0]
+                return re.sub(r"\s+", " ", cleaned).strip(" -_，,。.：:")[:120]
     return None
 
 
@@ -209,7 +235,12 @@ def resolve_document_grade(
     return current_grade or inferred_grade
 
 
-def backfill_document_metadata(db: Session, *, limit: int | None = None) -> dict[str, int]:
+def backfill_document_metadata(
+    db: Session,
+    *,
+    limit: int | None = None,
+    commit: bool = True,
+) -> dict[str, int]:
     statement = select(KnowledgeDocument).order_by(KnowledgeDocument.created_at)
     if limit:
         statement = statement.limit(limit)
@@ -227,8 +258,12 @@ def backfill_document_metadata(db: Session, *, limit: int | None = None) -> dict
             haystack=haystack,
             metadata_source=metadata.get("metadata_source"),
         )
+        if not grade and document.source_type == "wikibooks_api":
+            grade = "高一" if str(metadata.get("topic") or "") in {"函数", "不等式", "三角函数"} else "高二"
         textbook_aliases = {"人教a版": "人教A版", "人教b版": "人教B版"}
         textbook = textbook_aliases.get(document.textbook_version or "", document.textbook_version) or textbook_aliases.get(str(metadata.get("textbook_version") or ""), metadata.get("textbook_version")) or infer_textbook_version(haystack)
+        if not textbook and document.source_type == "wikibooks_api":
+            textbook = "通用课程"
         current_chapter = document.chapter or metadata.get("chapter")
         if metadata.get("metadata_source") == "rule_backfill" and current_chapter and (
             len(str(current_chapter)) >= 110 or str(current_chapter).lower().count(".docx") > 1
@@ -248,8 +283,26 @@ def backfill_document_metadata(db: Session, *, limit: int | None = None) -> dict
         metadata["document_family"] = family
         metadata.setdefault("metadata_source", "rule_backfill")
         document.document_metadata = metadata
-    db.commit()
-    return {"documents": len(documents), "fields_changed": changed}
+    required_fields = ("subject", "grade", "textbook_version", "chapter", "document_role")
+    missing_by_field = {
+        f"missing_{field}": sum(not getattr(document, field) for document in documents)
+        for field in required_fields
+    }
+    incomplete_documents = sum(
+        not all(getattr(document, field) for field in required_fields)
+        for document in documents
+    )
+    summary = {
+        "documents": len(documents),
+        "fields_changed": changed,
+        "incomplete_documents": incomplete_documents,
+        **missing_by_field,
+    }
+    if commit:
+        db.commit()
+    else:
+        db.rollback()
+    return summary
 
 
 def _graph_node_id(subject: str, name: str) -> str:

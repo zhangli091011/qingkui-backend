@@ -200,12 +200,20 @@ def _upsert_page(db: Session, page: WikibooksPage) -> tuple[str, int]:
         "revision_id": page.revision_id,
         "topic": page.topic,
         "subject": "数学",
+        "grade": "高一" if page.topic in {"函数", "不等式", "三角函数"} else "高二",
+        "textbook_version": "通用课程",
+        "chapter": page.topic,
+        "document_role": "other",
         "retrieved_at": datetime.now(timezone.utc).isoformat(),
     }
     if document is None:
         document = KnowledgeDocument(
             title=page.title,
             subject="数学",
+            grade=metadata["grade"],
+            textbook_version=metadata["textbook_version"],
+            chapter=metadata["chapter"],
+            document_role=metadata["document_role"],
             source_type="wikibooks_api",
             source_uri=source_uri,
             authorization_status="authorized",
@@ -218,6 +226,10 @@ def _upsert_page(db: Session, page: WikibooksPage) -> tuple[str, int]:
         action = "imported"
     else:
         document.title = page.title
+        document.grade = metadata["grade"]
+        document.textbook_version = metadata["textbook_version"]
+        document.chapter = metadata["chapter"]
+        document.document_role = metadata["document_role"]
         document.authorization_status = "authorized"
         document.checksum_sha256 = checksum
         document.status = "text_ready"

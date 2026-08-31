@@ -90,7 +90,18 @@ def governance_report(
             }
         )
 
-    documents = list(db.scalars(select(KnowledgeDocument).where(KnowledgeDocument.subject == subject)))
+    subject_documents = list(
+        db.scalars(select(KnowledgeDocument).where(KnowledgeDocument.subject == subject))
+    )
+    # A document explicitly assigned to another grade or edition is outside the
+    # launch gate. Null values remain candidates so incomplete launch metadata
+    # cannot disappear from the report merely because it is incomplete.
+    documents = [
+        document
+        for document in subject_documents
+        if document.grade in {None, grade}
+        and document.textbook_version in {None, textbook_version}
+    ]
     missing_metadata = sum(
         1
         for document in documents
@@ -104,6 +115,11 @@ def governance_report(
         .join(KnowledgeChunk.document)
         .where(
             KnowledgeDocument.subject == subject,
+            or_(KnowledgeDocument.grade.is_(None), KnowledgeDocument.grade == grade),
+            or_(
+                KnowledgeDocument.textbook_version.is_(None),
+                KnowledgeDocument.textbook_version == textbook_version,
+            ),
             KnowledgeChunk.content_type == "formula",
             KnowledgeChunk.formula_review_status == "pending",
         )
@@ -127,7 +143,8 @@ def governance_report(
             "blocked": sum(not item["publishable"] for item in candidates),
         },
         "documents": {
-            "total_for_subject": len(documents),
+            "total_for_subject": len(subject_documents),
+            "total_in_launch_scope": len(documents),
             "missing_metadata": missing_metadata,
             "unpublishable_authorization": unpublishable_documents,
             "pending_formula_review": pending_formulas,

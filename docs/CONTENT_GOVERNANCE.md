@@ -28,6 +28,13 @@
 
 治理报告接口：`GET /api/admin/knowledge/governance`。它返回范围内候选节点、逐项阻断原因、文档元数据、公式审核和关系类型统计。
 
+元数据回填应先运行只读演练，检查输出中的 `fields_changed`、`incomplete_documents` 和各 `missing_*` 计数，再正式提交：
+
+```powershell
+python -m app.cli backfill-document-metadata --dry-run
+python -m app.cli backfill-document-metadata
+```
+
 可以运行 `python -m app.cli materialize-launch-candidates --limit 600` 从首发范围内的授权文档生成审核候选。命令按文档族去重，抽取章节、知识点和题型层级并建立关系；新节点一律为未激活草稿，且包含“待审核”标记，不能自动发布。
 
 ## 批量审核包

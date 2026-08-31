@@ -213,6 +213,103 @@ def write_evidence_templates(output_dir: Path, *, overwrite: bool = False) -> li
     return written
 
 
+def build_c9_evidence(
+    checklist_path: Path,
+    apk_path: Path,
+    output_path: Path,
+    *,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Hash an explicitly completed device checklist into release evidence.
+
+    This function validates and packages human-entered results. It never turns
+    attachment presence into a passing result and never supplies tester data.
+    """
+    if output_path.exists() and not overwrite:
+        raise FileExistsError(f"output already exists: {output_path}")
+    if not checklist_path.is_file():
+        raise FileNotFoundError(f"checklist does not exist: {checklist_path}")
+    if not apk_path.is_file():
+        raise FileNotFoundError(f"APK does not exist: {apk_path}")
+    try:
+        checklist = json.loads(checklist_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("C9 checklist must be valid UTF-8 JSON") from exc
+    if not isinstance(checklist, dict) or checklist.get("schema") != "qingkui-c9-checklist-v1":
+        raise ValueError("C9 checklist schema must be qingkui-c9-checklist-v1")
+    raw_checks = checklist.get("checks")
+    if not isinstance(raw_checks, list):
+        raise ValueError("C9 checklist checks must be an array")
+
+    evidence_root = output_path.parent.resolve()
+    checks_by_id: dict[str, dict[str, Any]] = {}
+    allowed_statuses = {"pending", "passed", "failed"}
+    for raw_check in raw_checks:
+        if not isinstance(raw_check, dict) or not isinstance(raw_check.get("id"), str):
+            raise ValueError("each C9 checklist item must have a string id")
+        check_id = raw_check["id"]
+        if check_id in checks_by_id:
+            raise ValueError(f"duplicate C9 checklist id: {check_id}")
+        status = raw_check.get("status")
+        if status not in allowed_statuses:
+            raise ValueError(f"invalid status for C9 check {check_id}: {status}")
+        raw_evidence = raw_check.get("evidence", [])
+        if not isinstance(raw_evidence, list) or not all(isinstance(item, str) for item in raw_evidence):
+            raise ValueError(f"evidence for C9 check {check_id} must be relative path strings")
+        evidence: list[dict[str, str]] = []
+        for item in raw_evidence:
+            relative_path = Path(item)
+            if relative_path.is_absolute() or ".." in relative_path.parts:
+                raise ValueError(f"unsafe evidence path for C9 check {check_id}: {item}")
+            resolved = (evidence_root / relative_path).resolve()
+            try:
+                resolved.relative_to(evidence_root)
+            except ValueError as exc:
+                raise ValueError(f"unsafe evidence path for C9 check {check_id}: {item}") from exc
+            if not resolved.is_file():
+                raise FileNotFoundError(f"evidence does not exist for C9 check {check_id}: {item}")
+            evidence.append({"path": relative_path.as_posix(), "sha256": _sha256(resolved)})
+        if status == "passed" and not evidence:
+            raise ValueError(f"passed C9 check requires evidence: {check_id}")
+        checks_by_id[check_id] = {
+            "id": check_id,
+            "status": status,
+            "notes": raw_check.get("notes"),
+            "evidence": evidence,
+        }
+
+    check_ids = set(checks_by_id)
+    if check_ids != REQUIRED_C9_CHECKS:
+        missing = sorted(REQUIRED_C9_CHECKS - check_ids)
+        unexpected = sorted(check_ids - REQUIRED_C9_CHECKS)
+        raise ValueError(f"C9 checklist ids do not match required checks: missing={missing}, unexpected={unexpected}")
+    statuses = [checks_by_id[item]["status"] for item in sorted(REQUIRED_C9_CHECKS)]
+    overall_status = "passed" if all(item == "passed" for item in statuses) else (
+        "failed" if any(item == "failed" for item in statuses) else "pending"
+    )
+    tester = checklist.get("tester")
+    completed_at = checklist.get("completed_at")
+    if overall_status == "passed":
+        if not isinstance(tester, str) or not tester.strip():
+            raise ValueError("a passed C9 checklist requires tester")
+        if _parse_datetime(completed_at) is None:
+            raise ValueError("a passed C9 checklist requires a valid completed_at")
+
+    payload = {
+        "schema": "qingkui-c9-evidence-v1",
+        "status": overall_status,
+        "completed_at": completed_at,
+        "device": checklist.get("device", {}),
+        "network": checklist.get("network", ""),
+        "tester": tester or "",
+        "apk_sha256": _sha256(apk_path),
+        "checks": [checks_by_id[item] for item in sorted(REQUIRED_C9_CHECKS)],
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return payload
+
+
 def build_release_readiness_report(
     db: Session,
     *,

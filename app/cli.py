@@ -173,11 +173,11 @@ def build_vector_index_file() -> None:
     print(f"Vector index built for {count} chunks")
 
 
-def backfill_metadata_file(limit: int | None = None) -> None:
+def backfill_metadata_file(limit: int | None = None, *, dry_run: bool = False) -> None:
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
-        summary = backfill_document_metadata(db, limit=limit)
-    print(f"Metadata backfill: documents={summary['documents']}, fields_changed={summary['fields_changed']}")
+        summary = backfill_document_metadata(db, limit=limit, commit=not dry_run)
+    print(json.dumps({"dry_run": dry_run, **summary}, ensure_ascii=False, indent=2))
 
 
 def extract_graph_file(limit: int | None = None) -> None:
@@ -338,6 +338,35 @@ def release_evidence_templates_file(output_dir: str, *, overwrite: bool) -> None
     )
 
 
+def c9_evidence_file(
+    checklist: str,
+    apk: str,
+    output: str,
+    *,
+    overwrite: bool,
+) -> None:
+    from app.services.release_readiness import build_c9_evidence
+
+    payload = build_c9_evidence(
+        Path(checklist).resolve(),
+        Path(apk).resolve(),
+        Path(output).resolve(),
+        overwrite=overwrite,
+    )
+    print(
+        json.dumps(
+            {
+                "output": str(Path(output).resolve()),
+                "status": payload["status"],
+                "apk_sha256": payload["apk_sha256"],
+                "completed_checks": sum(item["status"] == "passed" for item in payload["checks"]),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
 def release_readiness_report_file(
     output: str | None,
     *,
@@ -414,6 +443,7 @@ def main() -> None:
     sqlite_import_command.add_argument("--batch-size", type=int, default=250)
     metadata_command = subparsers.add_parser("backfill-document-metadata", help="infer missing local document metadata")
     metadata_command.add_argument("--limit", type=int)
+    metadata_command.add_argument("--dry-run", action="store_true")
     graph_command = subparsers.add_parser("extract-knowledge-graph", help="extract conservative graph relation candidates")
     graph_command.add_argument("--limit", type=int)
     governance_command = subparsers.add_parser("content-governance-report", help="audit launch-scope content before publication")
@@ -453,6 +483,14 @@ def main() -> None:
     )
     evidence_command.add_argument("--output-dir", default="release-evidence")
     evidence_command.add_argument("--overwrite", action="store_true")
+    c9_evidence_command = subparsers.add_parser(
+        "c9-evidence-build",
+        help="validate a human C9 checklist and hash its APK and attachments",
+    )
+    c9_evidence_command.add_argument("--checklist", required=True)
+    c9_evidence_command.add_argument("--apk", required=True)
+    c9_evidence_command.add_argument("--output", default="release-evidence/c9-evidence.json")
+    c9_evidence_command.add_argument("--overwrite", action="store_true")
     readiness_command = subparsers.add_parser(
         "release-readiness-report",
         help="combine config, database, content and external evidence into one release gate",
@@ -517,7 +555,7 @@ def main() -> None:
 
         import_sqlite_knowledge(args.snapshot, batch_size=max(1, args.batch_size))
     elif args.command == "backfill-document-metadata":
-        backfill_metadata_file(args.limit)
+        backfill_metadata_file(args.limit, dry_run=args.dry_run)
     elif args.command == "extract-knowledge-graph":
         extract_graph_file(args.limit)
     elif args.command == "content-governance-report":
@@ -548,6 +586,13 @@ def main() -> None:
         notify_operational_alerts_file(dry_run=args.dry_run)
     elif args.command == "release-evidence-templates":
         release_evidence_templates_file(args.output_dir, overwrite=args.overwrite)
+    elif args.command == "c9-evidence-build":
+        c9_evidence_file(
+            args.checklist,
+            args.apk,
+            args.output,
+            overwrite=args.overwrite,
+        )
     elif args.command == "release-readiness-report":
         release_readiness_report_file(
             args.output,

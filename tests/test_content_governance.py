@@ -4,6 +4,7 @@ import uuid
 from sqlalchemy import select
 
 from app.models import AuditLog, KnowledgeChunk, KnowledgeDocument, User, UserRole
+from app.services.content_governance import governance_report
 
 
 def _admin_headers(client) -> dict[str, str]:
@@ -209,6 +210,70 @@ def test_formula_review_queue_and_audit_log(client) -> None:
         )
         assert audit is not None
         assert audit.details["formula_updated"] is True
+
+
+def test_governance_document_gate_is_limited_to_launch_scope(client) -> None:
+    in_scope_id = str(uuid.uuid4())
+    out_of_scope_id = str(uuid.uuid4())
+    with SessionLocal() as db:
+        db.add_all(
+            [
+                KnowledgeDocument(
+                    id=in_scope_id,
+                    title="历史首发候选",
+                    subject="历史",
+                    grade="高一",
+                    textbook_version="人教A版",
+                    chapter=None,
+                    document_role="notes",
+                    source_type="local_file",
+                    source_uri=f"oss://test/{in_scope_id}.md",
+                    authorization_status="self_owned",
+                    checksum_sha256=uuid.uuid4().hex + uuid.uuid4().hex,
+                    status="indexed",
+                    document_metadata={},
+                ),
+                KnowledgeDocument(
+                    id=out_of_scope_id,
+                    title="历史通用参考",
+                    subject="历史",
+                    grade="高二",
+                    textbook_version="通用课程",
+                    chapter=None,
+                    document_role=None,
+                    source_type="wikibooks_api",
+                    source_uri=f"https://example.test/{out_of_scope_id}",
+                    authorization_status="self_owned",
+                    checksum_sha256=uuid.uuid4().hex + uuid.uuid4().hex,
+                    status="indexed",
+                    document_metadata={},
+                ),
+            ]
+        )
+        db.add(
+            KnowledgeChunk(
+                document_id=out_of_scope_id,
+                sequence=0,
+                content="待审核公式",
+                content_type="formula",
+                formula_review_status="pending",
+                char_start=0,
+                char_end=5,
+            )
+        )
+        db.commit()
+
+        report = governance_report(
+            db,
+            subject="历史",
+            grade="高一",
+            textbook_version="人教A版",
+        )
+
+    assert report["documents"]["total_for_subject"] == 2
+    assert report["documents"]["total_in_launch_scope"] == 1
+    assert report["documents"]["missing_metadata"] == 1
+    assert report["documents"]["pending_formula_review"] == 0
 
 
 def test_source_document_management_and_graph_integrity(client) -> None:

@@ -28,3 +28,14 @@ def test_numbered_lecture_title_becomes_stable_chapter() -> None:
     title = "第01讲 3.1.1函数的概念（知识清单+15类热点题型讲练）（教师版）.docx"
 
     assert infer_chapter(title, {"filename": title}) == "3.1.1 函数的概念"
+
+
+def test_explicit_title_is_not_masked_by_unhelpful_filename() -> None:
+    metadata = {"filename": "扫描件_001.pdf"}
+
+    assert infer_chapter("第08讲 拓展二：直线与平面所成角（教师版）", metadata) == "直线与平面所成角"
+
+
+def test_special_topic_and_full_book_formula_titles_are_inferred() -> None:
+    assert infer_chapter("专题7.10 随机变量及其分布（知识清单）") == "7.10 随机变量及其分布"
+    assert infer_chapter("高中数学全册公式OCR汇总.pdf") == "全册公式索引"

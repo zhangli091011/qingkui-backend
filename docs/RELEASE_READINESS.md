@@ -29,6 +29,35 @@ python -m app.cli release-readiness-report `
 
 模板命令只创建 `pending`/`draft` 文件，绝不会自动标记通过，也不会覆盖已有文件，除非显式使用 `--overwrite`。人工证据不得由模型、模拟器结果或脚本默认值代填。
 
+完成 C9 人工检查后，可先填写 `qingkui-c9-checklist-v1` JSON。每项 `status` 必须由验收人员明确填写，`evidence` 是相对于最终证据目录的附件路径列表。以下命令会校验十项检查、计算正式 APK 与附件的 SHA-256，并生成后端可验证的证据；它不会根据附件存在与否自动判定通过：
+
+```json
+{
+  "schema": "qingkui-c9-checklist-v1",
+  "completed_at": "2026-09-01T12:00:00+00:00",
+  "tester": "device-reviewer-01",
+  "device": {"model": "Huawei Qingyun C9", "api_level": 34},
+  "network": "school-pilot",
+  "checks": [
+    {
+      "id": "campus_https_api",
+      "status": "passed",
+      "notes": "校园网实测",
+      "evidence": ["c9/campus_https_api.txt"]
+    }
+  ]
+}
+```
+
+实际文件必须包含模板列出的全部十项检查；以上只展示单项格式。
+
+```powershell
+python -m app.cli c9-evidence-build `
+  --checklist release-evidence/c9-checklist.json `
+  --apk path/to/app-release.apk `
+  --output release-evidence/c9-evidence.json
+```
+
 ## 自动交叉校验
 
 报告同时验证：
