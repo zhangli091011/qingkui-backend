@@ -18,3 +18,6 @@ history-qa-answers*.json
 history-qa-answers*.md
 qa-benchmark-report*.json
 release-evidence/
+reports/
+review-packets/
+tmp/

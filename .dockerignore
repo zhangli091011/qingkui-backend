@@ -14,3 +14,7 @@ data
 build
 dist
 tests
+release-evidence
+reports
+review-packets
+tmp
