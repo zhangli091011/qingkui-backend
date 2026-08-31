@@ -15,6 +15,13 @@ def test_pilot_is_a_supported_environment() -> None:
     assert settings.privacy_consent_enforced is False
 
 
+def test_ai_kill_switch_overrides_a_configured_provider() -> None:
+    settings = Settings(_env_file=None, ai_enabled=False, ai_provider="stub")
+
+    assert settings.ai_enabled is False
+    assert settings.ai_ready is False
+
+
 @pytest.mark.parametrize("app_env", ["pilot", "production"])
 def test_deployment_environments_reject_development_secret(app_env: str) -> None:
     with pytest.raises(ValidationError, match="JWT_SECRET must be changed"):

@@ -378,3 +378,6 @@ def test_admin_page_exposes_review_workspaces(client) -> None:
     assert "活动额度" in response.text
     assert "运行告警" in response.text
     assert "innerHTML" not in response.text
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert "frame-ancestors 'none'" in response.headers["content-security-policy"]

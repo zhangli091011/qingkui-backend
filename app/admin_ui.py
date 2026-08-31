@@ -97,4 +97,18 @@ if(token)$('status').textContent='已设置令牌';
 
 
 def admin_page() -> HTMLResponse:
-    return HTMLResponse(ADMIN_HTML)
+    return HTMLResponse(
+        ADMIN_HTML,
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Security-Policy": (
+                "default-src 'none'; connect-src 'self'; img-src 'self' data:; "
+                "style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; "
+                "form-action 'none'; frame-ancestors 'none'"
+            ),
+            "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "X-Frame-Options": "DENY",
+        },
+    )

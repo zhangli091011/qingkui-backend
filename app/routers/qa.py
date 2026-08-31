@@ -49,6 +49,13 @@ from app.subjects import normalize_subject, resolve_subject
 router = APIRouter(prefix="/qa", tags=["AI 问答"])
 
 
+def _require_ai_available() -> None:
+    if not settings.ai_enabled:
+        raise HTTPException(status_code=503, detail="AI 功能正在维护，学习记录和知识图谱仍可正常使用")
+    if not settings.ai_ready:
+        raise HTTPException(status_code=503, detail="AI 服务尚未配置")
+
+
 _VAGUE_QUESTIONS = {
     "帮我看看", "这个怎么做", "这道怎么做", "不会", "我不会", "讲一下", "解释一下",
     "为什么", "怎么办", "帮帮我", "看一下", "怎么弄", "这是什么",
@@ -239,8 +246,7 @@ def send_message(
     if conversation is None:
         raise HTTPException(status_code=404, detail="会话不存在")
     _enforce_safe_input(db, user.id, payload.content, conversation.id)
-    if not settings.ai_ready:
-        raise HTTPException(status_code=503, detail="AI 服务尚未配置")
+    _require_ai_available()
 
     reservation = reserve_idempotency(
         db,
@@ -615,8 +621,7 @@ def stream_message(
     if conversation is None:
         raise HTTPException(status_code=404, detail="会话不存在")
     _enforce_safe_input(db, user.id, payload.content, conversation.id)
-    if not settings.ai_ready:
-        raise HTTPException(status_code=503, detail="AI 服务尚未配置")
+    _require_ai_available()
     reservation = reserve_idempotency(
         db,
         user_id=user.id,

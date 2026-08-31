@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.db import SessionLocal
+from app.config import settings
 from app.models import AuditLog, MistakeAsset, MistakePracticeRound, ModelCall, MistakeProblem, OcrTask, utc_now
 from app.services.practice_validation import numeric_reference_is_consistent, validate_practice_answer
 
@@ -95,6 +96,36 @@ def test_analysis_failure_does_not_charge_and_is_cross_user_private(client: Test
     )
     other_headers = {"Authorization": f"Bearer {other.json()['access_token']}"}
     assert client.post(f"/api/mistakes/{mistake['id']}/analyze", headers=other_headers).status_code == 404
+
+
+def test_ai_kill_switch_preserves_mistake_and_blocks_analysis_and_generation(
+    client: TestClient,
+    account,
+    monkeypatch,
+) -> None:
+    _, headers = account
+    mistake = _create(client, headers, suffix="（停机门）")
+    initial_balance = client.get("/api/credits", headers=headers).json()["balance"]
+    monkeypatch.setattr(settings, "ai_enabled", False)
+
+    blocked_analysis = client.post(f"/api/mistakes/{mistake['id']}/analyze", headers=headers)
+
+    assert blocked_analysis.status_code == 503
+    assert "维护" in blocked_analysis.json()["detail"]
+    assert client.get("/api/credits", headers=headers).json()["balance"] == initial_balance
+    assert client.get(f"/api/mistakes/{mistake['id']}", headers=headers).json()["analysis_status"] == "not_started"
+
+    monkeypatch.setattr(settings, "ai_enabled", True)
+    assert client.post(f"/api/mistakes/{mistake['id']}/analyze", headers=headers).status_code == 200
+    balance_after_analysis = client.get("/api/credits", headers=headers).json()["balance"]
+    monkeypatch.setattr(settings, "ai_enabled", False)
+
+    blocked_generation = client.post(f"/api/mistakes/{mistake['id']}/practices/generate", headers=headers)
+
+    assert blocked_generation.status_code == 503
+    assert "维护" in blocked_generation.json()["detail"]
+    assert client.get("/api/credits", headers=headers).json()["balance"] == balance_after_analysis
+    assert client.get(f"/api/mistakes/{mistake['id']}", headers=headers).json()["practice_rounds"] == []
 
 
 def test_server_numeric_validation_overrides_client_and_schedules_review(client: TestClient, account) -> None:

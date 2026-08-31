@@ -70,6 +70,7 @@ def health() -> HealthResponse:
     return HealthResponse(
         status="ok" if database_status == "ok" else "degraded",
         database=database_status,
+        ai_enabled=settings.ai_enabled,
         ai_provider=settings.ai_provider,
         ai_model=settings.deepseek_model if settings.ai_provider == "deepseek" else "grounded-stub",
         ai_ready=settings.ai_ready,

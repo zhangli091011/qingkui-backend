@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import joinedload
 
 from app.deps import CurrentUser, DbSession
@@ -23,13 +23,44 @@ from app.subjects import SUBJECTS, classify_subject_semantic, infer_subject
 router = APIRouter(prefix="/knowledge", tags=["知识图谱"])
 
 
-def _status(db: DbSession, user_id: str, node_id: str) -> KnowledgeStatus:
-    state = status_for(db, user_id, node_id)
-    return state.status if state else KnowledgeStatus.unexplored
+def _statuses(db: DbSession, user_id: str, node_ids: list[str]) -> dict[str, KnowledgeStatus]:
+    if not node_ids:
+        return {}
+    return dict(
+        db.execute(
+            select(UserKnowledgeState.node_id, UserKnowledgeState.status).where(
+                UserKnowledgeState.user_id == user_id,
+                UserKnowledgeState.node_id.in_(node_ids),
+            )
+        ).all()
+    )
 
 
-def _summary(db: DbSession, user_id: str, node: KnowledgeNode) -> KnowledgeNodeSummary:
-    return KnowledgeNodeSummary.model_validate(node).model_copy(update={"status": _status(db, user_id, node.id)})
+def _states(db: DbSession, user_id: str, node_ids: list[str]) -> dict[str, UserKnowledgeState]:
+    if not node_ids:
+        return {}
+    return {
+        state.node_id: state
+        for state in db.scalars(
+            select(UserKnowledgeState).where(
+                UserKnowledgeState.user_id == user_id,
+                UserKnowledgeState.node_id.in_(node_ids),
+            )
+        )
+    }
+
+
+def _summaries(db: DbSession, user_id: str, nodes: list[KnowledgeNode]) -> list[KnowledgeNodeSummary]:
+    states = _states(db, user_id, [node.id for node in nodes])
+    return [
+        KnowledgeNodeSummary.model_validate(node).model_copy(
+            update={
+                "status": states[node.id].status if node.id in states else KnowledgeStatus.unexplored,
+                "is_favorite": states[node.id].is_favorite if node.id in states else False,
+            }
+        )
+        for node in nodes
+    ]
 
 
 @router.get("/search", response_model=list[KnowledgeNodeSummary])
@@ -39,7 +70,7 @@ def search(
     q: str = Query(min_length=1, max_length=100),
     limit: int = Query(default=20, ge=1, le=50),
 ) -> list[KnowledgeNodeSummary]:
-    return [_summary(db, user.id, node) for node in search_nodes(db, q, limit)]
+    return _summaries(db, user.id, search_nodes(db, q, limit))
 
 
 @router.get("/subjects", response_model=list[str])
@@ -85,10 +116,11 @@ def knowledge_tree(
             .order_by(KnowledgeNode.chapter, KnowledgeNode.section, KnowledgeNode.name)
         )
     )
+    statuses = _statuses(db, user.id, [node.id for node in nodes])
     grouped: dict[str, dict[str, list[KnowledgeTreeNode]]] = {}
     for node in nodes:
         grouped.setdefault(node.chapter, {}).setdefault(node.section or "本章知识点", []).append(
-            KnowledgeTreeNode(id=node.id, name=node.name, status=_status(db, user.id, node.id))
+            KnowledgeTreeNode(id=node.id, name=node.name, status=statuses.get(node.id, KnowledgeStatus.unexplored))
         )
     chapters = [
         KnowledgeTreeChapter(
@@ -124,7 +156,14 @@ def node_detail(node_id: str, db: DbSession, user: CurrentUser) -> KnowledgeNode
     )
     if node is None:
         raise HTTPException(status_code=404, detail="知识点不存在")
-    return KnowledgeNodeDetail.model_validate(node).model_copy(update={"status": _status(db, user.id, node.id)})
+    state = status_for(db, user.id, node.id)
+    return KnowledgeNodeDetail.model_validate(node).model_copy(
+        update={
+            "status": state.status if state else KnowledgeStatus.unexplored,
+            "is_favorite": state.is_favorite if state else False,
+            "note": state.note if state else None,
+        }
+    )
 
 
 @router.get("/nodes/{node_id}/neighbors", response_model=NeighborResponse)
@@ -137,20 +176,36 @@ def neighbors(
     center = db.get(KnowledgeNode, node_id)
     if center is None or not center.is_active or center.review_status != "approved":
         raise HTTPException(status_code=404, detail="知识点不存在")
-    edges = list(
-        db.scalars(
-            select(KnowledgeEdge)
-            .where(or_(KnowledgeEdge.source_node_id == node_id, KnowledgeEdge.target_node_id == node_id))
-            .limit(limit)
-        )
+    other_node_id = case(
+        (KnowledgeEdge.source_node_id == node_id, KnowledgeEdge.target_node_id),
+        else_=KnowledgeEdge.source_node_id,
     )
+    rows = db.execute(
+        select(KnowledgeEdge, KnowledgeNode)
+        .join(KnowledgeNode, KnowledgeNode.id == other_node_id)
+        .where(
+            or_(KnowledgeEdge.source_node_id == node_id, KnowledgeEdge.target_node_id == node_id),
+            KnowledgeNode.is_active.is_(True),
+            KnowledgeNode.review_status == "approved",
+        )
+        .order_by(KnowledgeEdge.id)
+        .limit(limit)
+    ).all()
+    nodes = [node for _, node in rows]
+    states = _states(db, user.id, [center.id, *[node.id for node in nodes]])
     items: list[NeighborNode] = []
-    for edge in edges:
-        other_id = edge.target_node_id if edge.source_node_id == node_id else edge.source_node_id
-        node = db.get(KnowledgeNode, other_id)
-        # Auto-extracted graph nodes remain hidden from learners until review.
-        if node is None or not node.is_active or node.review_status != "approved":
-            continue
-        values = _summary(db, user.id, node).model_dump()
+    for edge, node in rows:
+        values = KnowledgeNodeSummary.model_validate(node).model_copy(
+            update={
+                "status": states[node.id].status if node.id in states else KnowledgeStatus.unexplored,
+                "is_favorite": states[node.id].is_favorite if node.id in states else False,
+            }
+        ).model_dump()
         items.append(NeighborNode(**values, edge_type=edge.edge_type, edge_explanation=edge.explanation))
-    return NeighborResponse(center=_summary(db, user.id, center), nodes=items)
+    center_summary = KnowledgeNodeSummary.model_validate(center).model_copy(
+        update={
+            "status": states[center.id].status if center.id in states else KnowledgeStatus.unexplored,
+            "is_favorite": states[center.id].is_favorite if center.id in states else False,
+        }
+    )
+    return NeighborResponse(center=center_summary, nodes=items)

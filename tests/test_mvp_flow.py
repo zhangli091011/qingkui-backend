@@ -2,12 +2,16 @@ from fastapi.testclient import TestClient
 import json
 from concurrent.futures import ThreadPoolExecutor
 
+from sqlalchemy import event
+
+from app.db import engine
 from app.services.ai import HELP_GUIDANCE, MODE_GUIDANCE, QUESTION_POLICY
 
 
 def test_health(client: TestClient):
     response = client.get("/health")
     assert response.status_code == 200
+    assert response.json()["ai_enabled"] is True
     assert response.json()["ai_ready"] is True
 
 
@@ -52,6 +56,58 @@ def test_graph_qa_learning_and_credit_flow(client: TestClient, account):
     summary = client.get("/api/learning/summary", headers=headers)
     assert summary.status_code == 200
     assert any(item["id"] == "quadratic_function" for item in summary.json()["recent"])
+
+
+def test_neighbor_expansion_uses_constant_database_queries(client: TestClient, account):
+    _, headers = account
+    statements: list[str] = []
+
+    def record_statement(_connection, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record_statement)
+    try:
+        response = client.get(
+            "/api/knowledge/nodes/quadratic_function/neighbors",
+            params={"limit": 100},
+            headers=headers,
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", record_statement)
+
+    assert response.status_code == 200
+    assert len(response.json()["nodes"]) >= 3
+    # Authentication, center lookup, joined edge/node lookup and one batched
+    # user-state lookup stay constant as the requested neighbor limit grows.
+    assert len(statements) <= 6, statements
+
+
+def test_private_note_and_favorite_round_trip_without_cross_user_leak(client: TestClient, account):
+    _, headers = account
+    updated = client.patch(
+        "/api/learning/nodes/discriminant/state",
+        json={"status": "understood", "note": "我需要复习判别式的边界条件", "is_favorite": True},
+        headers=headers,
+    )
+    assert updated.status_code == 200, updated.text
+
+    detail = client.get("/api/knowledge/nodes/discriminant", headers=headers)
+    neighbors = client.get("/api/knowledge/nodes/discriminant/neighbors", headers=headers)
+    assert detail.json()["note"] == "我需要复习判别式的边界条件"
+    assert detail.json()["is_favorite"] is True
+    assert neighbors.json()["center"]["is_favorite"] is True
+    assert "note" not in neighbors.json()["center"]
+
+    other = client.post(
+        "/api/auth/register",
+        json={"username": "private_note_other", "password": "student-pass-789", "nickname": "隔离用户"},
+    ).json()
+    other_detail = client.get(
+        "/api/knowledge/nodes/discriminant",
+        headers={"Authorization": f"Bearer {other['access_token']}"},
+    ).json()
+    assert other_detail["note"] is None
+    assert other_detail["is_favorite"] is False
 
 
 def test_answer_feedback_can_report_content_and_schedule_linked_node_review(client: TestClient, account):

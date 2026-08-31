@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     smtp_from_address: str | None = None
     smtp_starttls: bool = True
 
+    ai_enabled: bool = True
     ai_provider: Literal["deepseek", "stub"] = "deepseek"
     deepseek_api_key: str | None = None
     deepseek_base_url: str = "https://api.deepseek.com"
@@ -119,7 +120,7 @@ class Settings(BaseSettings):
 
     @property
     def ai_ready(self) -> bool:
-        return self.ai_provider == "stub" or bool(self.deepseek_api_key)
+        return self.ai_enabled and (self.ai_provider == "stub" or bool(self.deepseek_api_key))
 
     @property
     def retrieval_ready(self) -> bool:

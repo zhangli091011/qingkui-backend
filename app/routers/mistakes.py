@@ -54,6 +54,13 @@ from app.services.practice_validation import validate_practice_answer
 router = APIRouter(prefix="/mistakes", tags=["错题本"])
 
 
+def _require_ai_available() -> None:
+    if not settings.ai_enabled:
+        raise HTTPException(status_code=503, detail="AI 功能正在维护，已保存的错题不会丢失")
+    if not settings.ai_ready:
+        raise HTTPException(status_code=503, detail="AI 服务尚未配置")
+
+
 def _enforce_safe_mistake_input(
     db: DbSession,
     user_id: str,
@@ -522,6 +529,7 @@ def analyze_mistake(mistake_id: str, db: DbSession, user: CurrentUser) -> Mistak
             provider=mistake.analysis_provider or "unknown",
             model=mistake.analysis_model or "unknown",
         )
+    _require_ai_available()
     cost = 2
     if account.balance < cost:
         raise HTTPException(status_code=402, detail="额度不足")
@@ -747,6 +755,7 @@ def generate_practice(mistake_id: str, db: DbSession, user: CurrentUser) -> Mist
     )
     if existing is not None:
         return existing
+    _require_ai_available()
     if mistake.review_stage == "completed" or mistake.study_status == "mastered":
         raise HTTPException(status_code=409, detail="该错题已完成隔周复习")
     now = datetime.now(timezone.utc)

@@ -204,6 +204,7 @@ class KnowledgeNodeSummary(ApiModel):
     section: str = "本章知识点"
     definition: str
     status: KnowledgeStatus = KnowledgeStatus.unexplored
+    is_favorite: bool = False
 
 
 class KnowledgeNodeDetail(KnowledgeNodeSummary):
@@ -216,6 +217,7 @@ class KnowledgeNodeDetail(KnowledgeNodeSummary):
     review_status: str
     updated_at: datetime
     source: SourceResponse
+    note: str | None = None
 
 
 class NeighborNode(KnowledgeNodeSummary):
@@ -1130,6 +1132,7 @@ class AdminCreditAdjustment(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     database: str
+    ai_enabled: bool
     ai_provider: str
     ai_model: str
     ai_ready: bool
