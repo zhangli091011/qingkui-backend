@@ -86,3 +86,28 @@ python -m app.cli content-review-apply `
 审核包为每个草稿节点提供来源、原文分块、当前阻断原因、同文档待审公式，以及从带“易错、注意、题型、例题”等标记的原文行中提取的建议。每条建议都保留 `chunk_id` 和原文证据。
 
 `content-review-packet` 只生成审核材料，不修改数据库。建议可能不完整或与节点边界不完全一致；审核员必须对照原文确认后填写节点字段和 `review` 结论。只有 `content-review-apply` 会在权限、版本、范围和发布门全部校验后写回；禁止使用其他脚本绕过该命令，把启发式建议直接批量写入或发布。
+
+## 自动预审与草稿补全
+
+对大量结构候选可以先运行两轮模型预审。第一轮只依据审核包中的原文分块补全定义、解释、易错点和题型；第二轮独立检查证据支持、边界条件和公式风险。规则检查、两轮结果、模型、Prompt 版本、证据分块和证据 SHA-256 会写入 `content_auto_reviews`：
+
+```powershell
+python -m app.cli auto-review-launch-content `
+  --subject 数学 `
+  --grade 高一 `
+  --textbook-version 人教A版 `
+  --limit 600 `
+  --workers 4 `
+  --output .local/math-auto-review.json
+```
+
+默认命令只生成预审记录。确认报告后，可以把高置信且证据完整的建议写成新的未激活草稿版本：
+
+```powershell
+python -m app.cli auto-review-launch-content `
+  --apply-drafts `
+  --confirmation APPLY_AI_DRAFT_IMPROVEMENTS `
+  --output .local/math-auto-review-applied.json
+```
+
+该命令在数据库层固定保留 `review_status=draft` 和 `is_active=false`，版本记录状态也是 `draft`，并写入 `knowledge_node.auto_review_applied` 审计事件。模型无权填写审核员、批准公式或发布节点。自动预审结束后必须重新生成 `content-review-packet`，由真实学科审核员逐项确认，再通过 `content-review-apply` 发布。

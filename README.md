@@ -50,6 +50,9 @@ python -m app.cli content-governance-report --output content-governance-report.j
 # 从首发范围授权文档生成最多 600 个未发布审核候选
 python -m app.cli materialize-launch-candidates --limit 600
 
+# 用 DeepSeek 生成带证据哈希的双轮预审；不会批准或发布节点
+python -m app.cli auto-review-launch-content --output .local/math-auto-review.json --limit 600 --workers 4
+
 # 终端交互式流式问答测试（不扣额度、不写入会话）
 python -m app.cli qa-console --mode knowledge --help-level approach
 ```

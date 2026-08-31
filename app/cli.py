@@ -289,6 +289,48 @@ def apply_content_review_packet_file(
     print(json.dumps({"dry_run": dry_run, "publish": publish, **summary.as_dict()}, ensure_ascii=False, indent=2))
 
 
+def auto_review_launch_content_file(
+    output: str,
+    *,
+    subject: str,
+    grade: str,
+    textbook_version: str,
+    chapter: str | None,
+    limit: int,
+    workers: int,
+    apply_drafts: bool,
+    confirmation: str | None,
+) -> None:
+    from app.services.automated_content_review import auto_review_launch_content
+
+    if apply_drafts and confirmation != "APPLY_AI_DRAFT_IMPROVEMENTS":
+        raise SystemExit("--confirmation must be APPLY_AI_DRAFT_IMPROVEMENTS")
+    Base.metadata.create_all(bind=engine)
+    with SessionLocal() as db:
+        summary, results = auto_review_launch_content(
+            db,
+            subject=subject,
+            grade=grade,
+            textbook_version=textbook_version,
+            chapter=chapter,
+            limit=limit,
+            workers=workers,
+            apply_drafts=apply_drafts,
+        )
+        db.commit()
+    payload = {
+        "schema": "qingkui-content-auto-review-report-v1",
+        "scope": {"subject": subject, "grade": grade, "textbook_version": textbook_version, "chapter": chapter},
+        "warning": "模型只补全未激活草稿；所有节点仍需真实学科审核员确认后才能发布。",
+        "summary": summary.as_dict(),
+        "results": results,
+    }
+    output_path = Path(output).resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps({"output": str(output_path), **summary.as_dict()}, ensure_ascii=False, indent=2))
+
+
 def import_wikibooks_content(pages_per_topic: int) -> None:
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
@@ -470,6 +512,19 @@ def main() -> None:
     review_apply_command.add_argument("--publish", action="store_true")
     review_apply_command.add_argument("--dry-run", action="store_true")
     review_apply_command.add_argument("--confirmation")
+    auto_review_command = subparsers.add_parser(
+        "auto-review-launch-content",
+        help="run evidence-backed model pre-review and optionally improve inactive drafts",
+    )
+    auto_review_command.add_argument("--output", required=True)
+    auto_review_command.add_argument("--subject", default="数学")
+    auto_review_command.add_argument("--grade", default="高一")
+    auto_review_command.add_argument("--textbook-version", default="人教A版")
+    auto_review_command.add_argument("--chapter")
+    auto_review_command.add_argument("--limit", type=int, default=600, choices=range(1, 601))
+    auto_review_command.add_argument("--workers", type=int, default=4, choices=range(1, 9))
+    auto_review_command.add_argument("--apply-drafts", action="store_true")
+    auto_review_command.add_argument("--confirmation")
     wikibooks_command = subparsers.add_parser("import-wikibooks")
     wikibooks_command.add_argument("--pages-per-topic", type=int, default=6, choices=range(1, 11))
     alert_command = subparsers.add_parser(
@@ -525,6 +580,19 @@ def main() -> None:
         action="store_true",
         help="emit interim metrics while keeping the release gate failed",
     )
+    eval_audit_command = subparsers.add_parser(
+        "qa-eval-audit",
+        help="lint evaluation structure and report approval/coverage blockers",
+    )
+    eval_audit_command.add_argument("--dataset", required=True)
+    eval_audit_command.add_argument("--output")
+    eval_auto_command = subparsers.add_parser(
+        "qa-eval-auto-assess",
+        help="add model scoring suggestions without changing human review fields",
+    )
+    eval_auto_command.add_argument("--run", required=True)
+    eval_auto_command.add_argument("--output", required=True)
+    eval_auto_command.add_argument("--workers", type=int, default=4, choices=range(1, 9))
     history_command = subparsers.add_parser("history-qa-batch", help="8并发生成历史题答案，不进行评分")
     history_command.add_argument("--workers", type=int, default=8, choices=range(1, 9))
     history_command.add_argument("--output", default="history-qa-answers.json")
@@ -578,6 +646,18 @@ def main() -> None:
             args.reviewer,
             publish=args.publish,
             dry_run=args.dry_run,
+            confirmation=args.confirmation,
+        )
+    elif args.command == "auto-review-launch-content":
+        auto_review_launch_content_file(
+            args.output,
+            subject=args.subject,
+            grade=args.grade,
+            textbook_version=args.textbook_version,
+            chapter=args.chapter,
+            limit=args.limit,
+            workers=args.workers,
+            apply_drafts=args.apply_drafts,
             confirmation=args.confirmation,
         )
     elif args.command == "import-wikibooks":
@@ -638,6 +718,25 @@ def main() -> None:
             allow_incomplete=args.allow_incomplete,
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))
+    elif args.command == "qa-eval-audit":
+        from app.human_evaluation import evaluation_dataset_report
+
+        report = evaluation_dataset_report(Path(args.dataset).resolve())
+        payload = json.dumps(report, ensure_ascii=False, indent=2)
+        if args.output:
+            output_path = Path(args.output).resolve()
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(payload + "\n", encoding="utf-8")
+        print(payload)
+    elif args.command == "qa-eval-auto-assess":
+        from app.human_evaluation import auto_assess_human_evaluation
+
+        report = auto_assess_human_evaluation(
+            Path(args.run).resolve(),
+            Path(args.output).resolve(),
+            workers=args.workers,
+        )
+        print(json.dumps(report["automated_assessment"], ensure_ascii=False, indent=2))
     elif args.command == "history-qa-batch":
         from app.history_batch import run_history_batch
 

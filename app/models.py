@@ -329,6 +329,32 @@ class KnowledgeNodeVersion(Base):
     node: Mapped[KnowledgeNode] = relationship(back_populates="versions")
 
 
+class ContentAutoReview(Base):
+    __tablename__ = "content_auto_reviews"
+    __table_args__ = (
+        UniqueConstraint("node_id", "node_version", "prompt_version", name="uq_content_auto_review_run"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    node_id: Mapped[str] = mapped_column(
+        ForeignKey("knowledge_nodes.id", ondelete="CASCADE"), index=True
+    )
+    node_version: Mapped[int] = mapped_column(Integer)
+    prompt_version: Mapped[str] = mapped_column(String(80), index=True)
+    status: Mapped[str] = mapped_column(String(30), default="generated", index=True)
+    rule_review: Mapped[dict] = mapped_column(JSON, default=dict)
+    generation: Mapped[dict] = mapped_column(JSON, default=dict)
+    critique: Mapped[dict] = mapped_column(JSON, default=dict)
+    evidence: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    evidence_sha256: Mapped[str] = mapped_column(String(64), index=True)
+    provider: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+
+
 class KnowledgeEdge(Base):
     __tablename__ = "knowledge_edges"
     __table_args__ = (UniqueConstraint("source_node_id", "target_node_id", "edge_type"),)

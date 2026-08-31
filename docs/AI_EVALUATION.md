@@ -16,6 +16,16 @@
 
 修改已批准题目的问题或参考要点必须递增数据集版本。不得为提高分数删除失败题；需要废弃时保留旧版本和变更原因。
 
+可先检查结构、覆盖面和当前批准状态：
+
+```powershell
+python -m app.cli qa-eval-audit `
+  --dataset config/evaluation/math-v1.json `
+  --output .local/math-eval-audit.json
+```
+
+结构检查通过不等于学科批准；命令不会修改 `review_status`。
+
 ## 生成待复核运行
 
 在与发布候选相同的数据库、模型、Prompt 和向量索引上执行：
@@ -28,6 +38,17 @@ python -m app.cli qa-eval-run `
 ```
 
 输出保存模型答案、实际学科路由、检索片段、供应商、模型、耗时和错误。`review` 初始状态一律是 `pending`，生成命令不会产生正确率。
+
+为了减少人工复核定位时间，可以在正式运行文件上追加自动预评分建议：
+
+```powershell
+python -m app.cli qa-eval-auto-assess `
+  --run qa-eval-math-v1-review.json `
+  --output release-evidence/human-eval-reviewed-run.json `
+  --workers 4
+```
+
+建议写在独立的 `automated_assessment` 字段中，包含缺失参考要点、引用风险和建议分值。命令不会修改 `review`，所有题仍保持 `pending`，不能据此通过发布门。
 
 ## 人工复核
 
@@ -66,6 +87,8 @@ python -m app.cli qa-eval-score `
 5. 使用的后端提交、Prompt 版本、知识索引 SHA-256 和审核人。
 
 进入统一发布证据目录时，分别保存为 `human-eval-dataset.json`、`human-eval-reviewed-run.json` 和 `human-eval-score.json`。运行文件记录评测集 SHA-256，评分文件记录被复核运行 SHA-256 和审核员集合；`release-readiness-report` 会重新计算并核对这条哈希链。
+
+在人工复核未完成时也可运行 `qa-eval-score --allow-incomplete` 生成哈希一致的中间评分文件。该文件会明确列出全部待复核题，并固定 `release_gate_passed=false`；人工填写运行文件后必须重新计算评分文件，旧哈希不会继续有效。
 
 ## 九学科分期
 

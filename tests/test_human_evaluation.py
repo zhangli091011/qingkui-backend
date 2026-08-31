@@ -8,6 +8,8 @@ import pytest
 from app.human_evaluation import (
     DATASET_SCHEMA,
     RUN_SCHEMA,
+    auto_assess_human_evaluation,
+    evaluation_dataset_report,
     load_dataset,
     score_human_evaluation,
 )
@@ -102,6 +104,13 @@ def test_math_seed_dataset_is_valid() -> None:
     assert any("跨学科误召回" in case.get("tags", []) for case in dataset["cases"])
 
 
+def test_dataset_audit_separates_structure_from_human_approval() -> None:
+    report = evaluation_dataset_report(Path("config/evaluation/math-v1.json"))
+    assert report["structurally_ready"] is True
+    assert report["release_ready"] is False
+    assert report["blockers"] == ["数据集尚未由学科审核员批准"]
+
+
 def test_dataset_rejects_duplicate_case_ids(tmp_path: Path) -> None:
     dataset = _dataset()
     dataset["cases"][1]["id"] = dataset["cases"][0]["id"]
@@ -173,3 +182,17 @@ def test_incomplete_interim_report_never_passes_release_gate(tmp_path: Path) -> 
     )
     assert report["reviewed_count"] == 0
     assert report["release_gate_passed"] is False
+
+
+def test_auto_assessment_never_completes_human_review(tmp_path: Path) -> None:
+    source = _write(tmp_path / "run.json", _run())
+    output = tmp_path / "assessed.json"
+    report = auto_assess_human_evaluation(source, output, workers=2)
+
+    assert report["automated_assessment"]["completed"] == 2
+    assert report["automated_assessment"]["failed"] == 0
+    assert all(item["automated_assessment"]["recommendation"] == "human_review" for item in report["results"])
+    assert all(item["review"]["status"] == "pending" for item in report["results"])
+    interim = score_human_evaluation(output, allow_incomplete=True)
+    assert interim["reviewed_count"] == 0
+    assert interim["release_gate_passed"] is False
