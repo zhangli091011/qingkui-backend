@@ -6,7 +6,7 @@ from starlette.requests import Request
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import ModelCall, User, UserRole
+from app.models import ModelCall, MistakePracticeRound, MistakeProblem, User, UserRole
 from app.rate_limit import RateLimitDecision, _client_identity, _limit_for, _route_bucket
 
 
@@ -49,6 +49,7 @@ def test_model_calls_capture_success_failure_tokens_and_admin_aggregation(client
         assert len(calls) == 2
         assert {call.success for call in calls} == {True, False}
         assert all(call.latency_ms >= 0 for call in calls)
+        calls[0].input_tokens = 1
         admin = db.get(User, auth["user"]["id"])
         admin.role = UserRole.admin
         db.commit()
@@ -69,6 +70,8 @@ def test_model_calls_capture_success_failure_tokens_and_admin_aggregation(client
     monkeypatch.setattr(settings, "operational_model_failure_min_calls", 1)
     monkeypatch.setattr(settings, "operational_model_failure_rate_threshold", 0.0)
     monkeypatch.setattr(settings, "operational_model_latency_threshold_ms", 0)
+    monkeypatch.setattr(settings, "operational_model_tokens_per_call_threshold", 1)
+    monkeypatch.setattr(settings, "operational_user_call_burst_threshold", 1)
     alerts = client.get("/api/admin/operational-alerts", headers=headers)
     assert alerts.status_code == 200
     alert_payload = alerts.json()
@@ -77,7 +80,84 @@ def test_model_calls_capture_success_failure_tokens_and_admin_aggregation(client
     assert {item["code"] for item in alert_payload["alerts"]} >= {
         "model_failure_rate",
         "model_latency",
+        "model_token_spike",
+        "user_call_burst",
     }
+
+
+def test_cost_efficiency_reports_active_student_and_mistake_loop_cost(client: TestClient, monkeypatch) -> None:
+    started_at = datetime.now(timezone.utc)
+    admin_auth, admin_headers = _register(client, "cost_efficiency_admin_01")
+    student_auth, _ = _register(client, "cost_efficiency_student_01")
+    with SessionLocal() as db:
+        db.get(User, admin_auth["user"]["id"]).role = UserRole.admin
+        mistake = MistakeProblem(
+            user_id=student_auth["user"]["id"],
+            subject="数学",
+            question_text="计算 2+2",
+            analysis_status="completed",
+        )
+        db.add(mistake)
+        db.flush()
+        db.add_all(
+            [
+                MistakePracticeRound(
+                    mistake_id=mistake.id,
+                    user_id=student_auth["user"]["id"],
+                    round_number=1,
+                    review_stage="next_week",
+                    status="completed",
+                    question_count=3,
+                    correct_count=3,
+                    authoritative_correct_count=3,
+                    completed_at=datetime.now(timezone.utc),
+                ),
+                ModelCall(
+                    user_id=student_auth["user"]["id"],
+                    feature="mistake_analysis",
+                    provider="deepseek",
+                    model="deepseek-v4-flash",
+                    success=True,
+                    input_tokens=1_000_000,
+                    output_tokens=500_000,
+                    latency_ms=100,
+                    reference_id=mistake.id,
+                ),
+            ]
+        )
+        db.commit()
+
+    monkeypatch.setattr(settings, "deepseek_input_cost_per_million_cny", 2.0)
+    monkeypatch.setattr(settings, "deepseek_output_cost_per_million_cny", 4.0)
+    report = client.get(
+        "/api/admin/cost-efficiency",
+        params={"start_at": started_at.isoformat()},
+        headers=admin_headers,
+    )
+    assert report.status_code == 200, report.text
+    payload = report.json()
+    assert payload["active_students"] == 1
+    assert payload["started_mistake_loops"] == 1
+    assert payload["completed_mistake_loops"] == 1
+    assert payload["estimated_model_cost_cny"] == 4.0
+    assert payload["estimated_mistake_loop_cost_cny"] == 4.0
+    assert payload["estimated_cost_per_active_student_cny"] == 4.0
+    assert payload["estimated_cost_per_completed_mistake_loop_cny"] == 4.0
+    assert payload["pricing_complete"] is True
+
+
+def test_cost_efficiency_rejects_invalid_period(client: TestClient) -> None:
+    auth, headers = _register(client, "cost_efficiency_admin_02")
+    with SessionLocal() as db:
+        db.get(User, auth["user"]["id"]).role = UserRole.admin
+        db.commit()
+    now = datetime.now(timezone.utc)
+    response = client.get(
+        "/api/admin/cost-efficiency",
+        params={"start_at": now.isoformat(), "end_at": now.isoformat()},
+        headers=headers,
+    )
+    assert response.status_code == 422
 
 
 def test_rate_limit_policy_and_429_response(client: TestClient, monkeypatch) -> None:

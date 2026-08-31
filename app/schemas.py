@@ -816,6 +816,9 @@ class PilotMetricsResponse(BaseModel):
     second_attempt_count: int
     second_attempt_correct_count: int
     second_attempt_accuracy: float
+    seven_day_followup_eligible_count: int
+    seven_day_followup_count: int
+    seven_day_followup_rate: float
 
 
 class PilotUserExport(BaseModel):
@@ -841,6 +844,8 @@ class PilotUserExport(BaseModel):
     completed_practice_round_count: int
     second_attempt_count: int
     second_attempt_correct_count: int
+    seven_day_followup_eligible_count: int
+    seven_day_followup_count: int
 
 
 class PilotExportResponse(BaseModel):
@@ -1153,6 +1158,28 @@ class ModelCostResponse(BaseModel):
     failed_calls: int = 0
     failure_rate: float = 0
     average_latency_ms: float = 0
+
+
+class CostEfficiencyResponse(BaseModel):
+    start_at: datetime
+    end_at: datetime
+    active_students: int
+    model_calls: int
+    input_tokens: int
+    output_tokens: int
+    successful_ocr_tasks: int
+    credits_spent: int
+    estimated_model_cost_cny: float
+    estimated_ocr_cost_cny: float
+    estimated_total_cost_cny: float
+    estimated_cost_per_active_student_cny: float
+    estimated_mistake_loop_cost_cny: float
+    started_mistake_loops: int
+    completed_mistake_loops: int
+    estimated_cost_per_started_mistake_loop_cny: float
+    estimated_cost_per_completed_mistake_loop_cny: float | None
+    unpriced_model_calls: int
+    pricing_complete: bool
 
 
 class OperationalAlert(BaseModel):

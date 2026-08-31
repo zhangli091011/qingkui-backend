@@ -107,6 +107,8 @@ def build_pilot_report(
             "completed_practice_round_count": 0,
             "second_attempt_count": 0,
             "second_attempt_correct_count": 0,
+            "seven_day_followup_eligible_count": 0,
+            "seven_day_followup_count": 0,
         }
         for user in users
     }
@@ -207,26 +209,40 @@ def build_pilot_report(
             )
         ):
             rows[task.user_id]["ocr_completed_count"] += 1
-        for practice_round in db.scalars(
-            select(MistakePracticeRound).where(
-                MistakePracticeRound.user_id.in_(user_ids),
-                MistakePracticeRound.started_at >= start,
-                MistakePracticeRound.started_at < end,
+        practice_rounds = list(
+            db.scalars(select(MistakePracticeRound).where(MistakePracticeRound.user_id.in_(user_ids)))
+        )
+        completed_next_week_ids: set[str] = set()
+        for practice_round in practice_rounds:
+            if start <= _as_utc(practice_round.started_at) < end:
+                rows[practice_round.user_id]["practice_round_count"] += 1
+                if practice_round.status == "completed":
+                    rows[practice_round.user_id]["completed_practice_round_count"] += 1
+            completed_in_period = (
+                practice_round.status == "completed"
+                and practice_round.completed_at is not None
+                and start <= _as_utc(practice_round.completed_at) < end
             )
-        ):
-            rows[practice_round.user_id]["practice_round_count"] += 1
-            if practice_round.status == "completed":
-                rows[practice_round.user_id]["completed_practice_round_count"] += 1
+            if practice_round.review_stage == "next_day" and completed_in_period:
+                rows[practice_round.user_id]["second_attempt_count"] += 1
+                rows[practice_round.user_id]["second_attempt_correct_count"] += int(
+                    practice_round.question_count > 0
+                    and practice_round.authoritative_correct_count == practice_round.question_count
+                )
+            if practice_round.review_stage == "next_week" and completed_in_period:
+                completed_next_week_ids.add(practice_round.mistake_id)
         for mistake in db.scalars(
             select(MistakeProblem).where(
                 MistakeProblem.user_id.in_(user_ids),
-                MistakeProblem.last_reviewed_at >= start,
-                MistakeProblem.last_reviewed_at < end,
-                MistakeProblem.second_attempt_correct.is_not(None),
+                MistakeProblem.first_corrected_at.is_not(None),
             )
         ):
-            rows[mistake.user_id]["second_attempt_count"] += 1
-            rows[mistake.user_id]["second_attempt_correct_count"] += int(mistake.second_attempt_correct is True)
+            due_at = _as_utc(mistake.first_corrected_at) + timedelta(days=7)
+            if start <= due_at < end:
+                rows[mistake.user_id]["seven_day_followup_eligible_count"] += 1
+                rows[mistake.user_id]["seven_day_followup_count"] += int(
+                    mistake.id in completed_next_week_ids
+                )
         for state in db.scalars(
             select(UserKnowledgeState).where(
                 UserKnowledgeState.user_id.in_(user_ids),
@@ -263,6 +279,8 @@ def build_pilot_report(
     completed_rounds = sum(row["completed_practice_round_count"] for row in rows.values())
     second_attempts = sum(row["second_attempt_count"] for row in rows.values())
     second_correct = sum(row["second_attempt_correct_count"] for row in rows.values())
+    followup_eligible = sum(row["seven_day_followup_eligible_count"] for row in rows.values())
+    followup_completed = sum(row["seven_day_followup_count"] for row in rows.values())
 
     def rate(numerator: int, denominator: int) -> float:
         return round(numerator / denominator, 4) if denominator else 0.0
@@ -296,5 +314,8 @@ def build_pilot_report(
         "second_attempt_count": second_attempts,
         "second_attempt_correct_count": second_correct,
         "second_attempt_accuracy": rate(second_correct, second_attempts),
+        "seven_day_followup_eligible_count": followup_eligible,
+        "seven_day_followup_count": followup_completed,
+        "seven_day_followup_rate": rate(followup_completed, followup_eligible),
     }
     return metrics, list(rows.values())

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -32,6 +33,19 @@ def build_operational_alert_summary(db: Session, *, now: datetime | None = None)
     failed_calls = int(failed_calls or 0)
     average_latency = float(average_latency or 0)
     failure_rate = failed_calls / calls if calls else 0.0
+    recent_call_rows = list(
+        db.execute(
+            select(ModelCall.user_id, ModelCall.input_tokens, ModelCall.output_tokens).where(
+                ModelCall.created_at >= window_start
+            )
+        )
+    )
+    max_tokens_per_call = max(
+        (int(input_tokens or 0) + int(output_tokens or 0) for _, input_tokens, output_tokens in recent_call_rows),
+        default=0,
+    )
+    calls_by_user = Counter(user_id for user_id, _, _ in recent_call_rows if user_id)
+    max_calls_per_user = max(calls_by_user.values(), default=0)
 
     stuck_before = generated_at - timedelta(minutes=max(1, settings.operational_ocr_stuck_minutes))
     stuck_ocr = db.scalar(
@@ -75,6 +89,26 @@ def build_operational_alert_summary(db: Session, *, now: datetime | None = None)
                 "threshold": float(settings.operational_model_latency_threshold_ms),
             }
         )
+    if max_tokens_per_call >= settings.operational_model_tokens_per_call_threshold:
+        alerts.append(
+            {
+                "severity": "warning",
+                "code": "model_token_spike",
+                "message": "存在单次 Token 用量异常的模型调用",
+                "value": float(max_tokens_per_call),
+                "threshold": float(settings.operational_model_tokens_per_call_threshold),
+            }
+        )
+    if max_calls_per_user >= settings.operational_user_call_burst_threshold:
+        alerts.append(
+            {
+                "severity": "warning",
+                "code": "user_call_burst",
+                "message": "存在单用户短时间调用量异常",
+                "value": float(max_calls_per_user),
+                "threshold": float(settings.operational_user_call_burst_threshold),
+            }
+        )
     if failed_ocr >= settings.operational_ocr_failed_threshold:
         alerts.append(
             {
@@ -109,6 +143,8 @@ def build_operational_alert_summary(db: Session, *, now: datetime | None = None)
             "model_failed_calls": failed_calls,
             "model_failure_rate": round(failure_rate, 4),
             "model_average_latency_ms": round(average_latency, 2),
+            "model_max_tokens_per_call": max_tokens_per_call,
+            "model_max_calls_per_user": max_calls_per_user,
             "ocr_active_tasks": int(active_ocr),
             "ocr_failed_tasks": int(failed_ocr),
             "ocr_stuck_tasks": int(stuck_ocr),

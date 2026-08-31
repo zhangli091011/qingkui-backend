@@ -220,15 +220,26 @@ def weekly_review(
     submitted = [practice for item in weekly_rounds for practice in item.practices if practice.status == "completed"]
     authoritative = [practice for practice in submitted if practice.validation_details.get("authoritative") is True]
     second_attempts = [
-        item for item in mistakes
-        if item.second_attempt_correct is not None and item.last_reviewed_at and start_at <= _utc(item.last_reviewed_at) < end_at
+        item
+        for item in rounds
+        if item.review_stage == "next_day"
+        and item.status == "completed"
+        and item.completed_at is not None
+        and start_at <= _utc(item.completed_at) < min(end_at, now)
     ]
     eligible_followups = [
-        item for item in mistakes
-        if item.first_corrected_at is not None and _utc(item.first_corrected_at) <= min(now, end_at) - timedelta(days=7)
+        item
+        for item in mistakes
+        if item.first_corrected_at is not None
+        and start_at <= _utc(item.first_corrected_at) + timedelta(days=7) < min(now, end_at)
     ]
     next_week_completed_ids = {
-        item.mistake_id for item in rounds if item.review_stage == "next_week" and item.status == "completed"
+        item.mistake_id
+        for item in rounds
+        if item.review_stage == "next_week"
+        and item.status == "completed"
+        and item.completed_at is not None
+        and start_at <= _utc(item.completed_at) < min(now, end_at)
     }
     upload_events = list(
         db.scalars(
@@ -266,7 +277,10 @@ def weekly_review(
         ocr_correction_rate=ratio(ocr_confirmed, ocr_completed),
         practice_completion_rate=ratio(len(completed), len(weekly_rounds)),
         authoritative_accuracy=ratio(sum(item.is_correct is True for item in authoritative), len(authoritative)),
-        second_attempt_accuracy=ratio(sum(item.second_attempt_correct is True for item in second_attempts), len(second_attempts)),
+        second_attempt_accuracy=ratio(
+            sum(item.question_count > 0 and item.authoritative_correct_count == item.question_count for item in second_attempts),
+            len(second_attempts),
+        ),
         seven_day_followup_rate=ratio(
             sum(item.id in next_week_completed_ids for item in eligible_followups), len(eligible_followups)
         ),

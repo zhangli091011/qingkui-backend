@@ -89,6 +89,8 @@ class Settings(BaseSettings):
     operational_model_failure_min_calls: int = 5
     operational_model_failure_rate_threshold: float = 0.2
     operational_model_latency_threshold_ms: int = 30_000
+    operational_model_tokens_per_call_threshold: int = 32_000
+    operational_user_call_burst_threshold: int = 30
     operational_ocr_failed_threshold: int = 3
     operational_ocr_stuck_minutes: int = 10
     operational_alert_webhook_url: str | None = None
@@ -109,6 +111,12 @@ class Settings(BaseSettings):
     contribution_reward_delay_hours: int = 168
     contribution_queue_provider: Literal["local", "redis"] = "local"
     contribution_queue_name: str = "qingkui-contributions"
+
+    # Cost estimates are deliberately configuration-driven. A zero price means
+    # that provider is unpriced and is reported as such by the admin API.
+    deepseek_input_cost_per_million_cny: float = 0.0
+    deepseek_output_cost_per_million_cny: float = 0.0
+    dashscope_ocr_cost_per_task_cny: float = 0.0
 
     @field_validator("cors_origins", mode="before")
     @classmethod

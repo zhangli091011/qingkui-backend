@@ -1,3 +1,5 @@
+from datetime import datetime, time, timedelta, timezone
+
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -390,3 +392,48 @@ def test_weekly_review_reports_upload_and_ocr_correction_rates(client: TestClien
     assert report.status_code == 200, report.text
     assert report.json()["upload_success_rate"] == 1.0
     assert report.json()["ocr_correction_rate"] == 1.0
+
+
+def test_historical_weekly_review_does_not_count_later_followup_completion(
+    client: TestClient,
+    account,
+) -> None:
+    auth, headers = account
+    today = datetime.now(timezone.utc).date()
+    current_week_start = today - timedelta(days=today.weekday())
+    previous_week_start = current_week_start - timedelta(days=7)
+    due_at = datetime.combine(previous_week_start + timedelta(days=1), time.min, tzinfo=timezone.utc)
+    with SessionLocal() as db:
+        mistake = MistakeProblem(
+            user_id=auth["user"]["id"],
+            subject="数学",
+            question_text="历史周报不能读取未来结果",
+            first_corrected_at=due_at - timedelta(days=7),
+            review_stage="completed",
+            study_status="mastered",
+        )
+        db.add(mistake)
+        db.flush()
+        db.add(
+            MistakePracticeRound(
+                mistake_id=mistake.id,
+                user_id=auth["user"]["id"],
+                round_number=3,
+                review_stage="next_week",
+                status="completed",
+                question_count=3,
+                correct_count=3,
+                authoritative_correct_count=3,
+                started_at=datetime.now(timezone.utc) - timedelta(minutes=2),
+                completed_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+            )
+        )
+        db.commit()
+
+    historical = client.get(
+        "/api/mistakes/review/weekly",
+        params={"week_start": previous_week_start.isoformat()},
+        headers=headers,
+    )
+    assert historical.status_code == 200, historical.text
+    assert historical.json()["seven_day_followup_rate"] == 0.0

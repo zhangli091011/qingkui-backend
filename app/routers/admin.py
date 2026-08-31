@@ -56,6 +56,7 @@ from app.schemas import (
     KnowledgeReviewQueueResponse,
     AuditLogResponse,
     ModelCostResponse,
+    CostEfficiencyResponse,
     OperationalAlertSummary,
     PilotCleanupCandidate,
     PilotCleanupExecute,
@@ -69,6 +70,7 @@ from app.schemas import (
     SourceResponse,
 )
 from app.services.content_governance import graph_integrity_report, governance_report, node_publication_blockers
+from app.services.cost_efficiency import build_cost_efficiency_report
 from app.services.mistakes import delete_assets, enqueue_ocr_task
 from app.services.operational_alerts import build_operational_alert_summary
 from app.services.pilot import anonymous_user_id, build_pilot_report
@@ -913,6 +915,16 @@ def model_costs(
 @router.get("/operational-alerts", response_model=OperationalAlertSummary)
 def operational_alerts(db: DbSession, _admin: AdminUser) -> dict:
     return build_operational_alert_summary(db)
+
+
+@router.get("/cost-efficiency", response_model=CostEfficiencyResponse)
+def cost_efficiency(
+    db: DbSession,
+    _admin: AdminUser,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
+) -> dict:
+    return build_cost_efficiency_report(db, start_at=start_at, end_at=end_at)
 
 
 @router.get("/pilot/metrics", response_model=PilotMetricsResponse)
