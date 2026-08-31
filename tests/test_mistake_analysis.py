@@ -2,7 +2,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.db import SessionLocal
-from app.models import MistakeProblem
+from app.models import MistakePracticeRound, ModelCall, MistakeProblem
 from app.services.practice_validation import validate_practice_answer
 
 
@@ -193,6 +193,79 @@ def test_three_stage_rounds_require_authoritative_answers_before_mastery(client:
     assert weekly.json()["practice_completion_rate"] > 0
     assert weekly.json()["authoritative_accuracy"] == 1.0
     assert weekly.json()["second_attempt_accuracy"] == 1.0
+
+
+def test_later_review_round_generates_fresh_questions_without_duplicates(client: TestClient, account) -> None:
+    _, headers = account
+    mistake = _create(client, headers, suffix="（去重）")
+    assert client.post(f"/api/mistakes/{mistake['id']}/analyze", headers=headers).status_code == 200
+    with SessionLocal() as db:
+        row = db.scalar(select(MistakeProblem).where(MistakeProblem.id == mistake["id"]))
+        row.analysis = {
+            **row.analysis,
+            "similar_practices": [
+                {"question": "计算 2+2", "hint": "直接计算", "answer_reference": "答案：4"},
+                {"question": "计算 1+3", "hint": "合并整数", "answer_reference": "答案：4"},
+                {"question": "计算 8/2", "hint": "先做除法", "answer_reference": "答案：4"},
+            ],
+        }
+        db.commit()
+
+    first = client.post(f"/api/mistakes/{mistake['id']}/practices/generate", headers=headers)
+    assert first.status_code == 201, first.text
+    first_questions = {item["question_text"] for item in first.json()["practices"]}
+    for practice in first.json()["practices"]:
+        submitted = client.post(
+            f"/api/mistakes/{mistake['id']}/practices/{practice['id']}/submit",
+            json={"student_answer": "4"},
+            headers=headers,
+        )
+        assert submitted.status_code == 200, submitted.text
+
+    with SessionLocal() as db:
+        row = db.scalar(select(MistakeProblem).where(MistakeProblem.id == mistake["id"]))
+        row.next_review_at = None
+        db.commit()
+    second = client.post(f"/api/mistakes/{mistake['id']}/practices/generate", headers=headers)
+    assert second.status_code == 201, second.text
+    second_questions = {item["question_text"] for item in second.json()["practices"]}
+    assert first_questions.isdisjoint(second_questions)
+    assert len(second_questions) == second.json()["question_count"]
+
+
+def test_failed_later_round_does_not_create_round_or_model_call(client: TestClient, account, monkeypatch) -> None:
+    _, headers = account
+    mistake = _create(client, headers, suffix="（生成失败）")
+    assert client.post(f"/api/mistakes/{mistake['id']}/analyze", headers=headers).status_code == 200
+    first = client.post(f"/api/mistakes/{mistake['id']}/practices/generate", headers=headers)
+    assert first.status_code == 201
+    for practice in first.json()["practices"]:
+        assert client.post(
+            f"/api/mistakes/{mistake['id']}/practices/{practice['id']}/submit",
+            json={"student_answer": "4"},
+            headers=headers,
+        ).status_code == 200
+    with SessionLocal() as db:
+        row = db.scalar(select(MistakeProblem).where(MistakeProblem.id == mistake["id"]))
+        row.next_review_at = None
+        before_rounds = len(list(db.scalars(select(MistakePracticeRound).where(MistakePracticeRound.mistake_id == row.id))))
+        before_calls = len(
+            list(db.scalars(select(ModelCall).where(ModelCall.feature == "mistake_practice_generation")))
+        )
+        db.commit()
+    monkeypatch.setattr(
+        "app.routers.mistakes.generate_similar_practices",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("provider down")),
+    )
+    failed = client.post(f"/api/mistakes/{mistake['id']}/practices/generate", headers=headers)
+    assert failed.status_code == 502
+    with SessionLocal() as db:
+        after_rounds = len(list(db.scalars(select(MistakePracticeRound).where(MistakePracticeRound.mistake_id == mistake["id"]))))
+        after_calls = len(
+            list(db.scalars(select(ModelCall).where(ModelCall.feature == "mistake_practice_generation")))
+        )
+    assert after_rounds == before_rounds
+    assert after_calls == before_calls
 
 
 def test_practice_rounds_and_weekly_review_are_cross_user_private(client: TestClient, account) -> None:

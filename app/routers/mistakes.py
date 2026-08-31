@@ -44,7 +44,7 @@ from app.schemas import (
 from app.services.knowledge import retrieve_chunks, retrieve_nodes
 from app.services.content_safety import moderate_text, moderation_text, record_safety_event
 from app.services.mistake_analysis import PROMPT_VERSION as ANALYSIS_PROMPT_VERSION
-from app.services.mistake_analysis import analyze_mistake_content
+from app.services.mistake_analysis import analyze_mistake_content, generate_similar_practices
 from app.services.mistakes import delete_assets, enqueue_ocr_task, store_mistake_image
 from app.services.model_calls import add_model_call, start_model_timer
 from app.services.object_storage import delete_private_object, get_private_bytes
@@ -655,7 +655,8 @@ def create_practice(
     return practice
 
 
-def _practice_candidates(analysis: dict) -> list[dict[str, str]]:
+def _practice_candidates(analysis: dict, excluded_questions: set[str] | None = None) -> list[dict[str, str]]:
+    excluded = {re.sub(r"\s+", "", value).casefold() for value in (excluded_questions or set())}
     candidates = analysis.get("similar_practices") or []
     if not isinstance(candidates, list):
         return []
@@ -668,7 +669,7 @@ def _practice_candidates(analysis: dict) -> list[dict[str, str]]:
         hint = str(value.get("hint") or "").strip()
         answer = str(value.get("answer_reference") or "").strip()
         normalized = re.sub(r"\s+", "", question).casefold()
-        if not question or not hint or not answer or normalized in seen:
+        if not question or not hint or not answer or normalized in seen or normalized in excluded:
             continue
         seen.add(normalized)
         unique.append({"question": question, "hint": hint, "answer_reference": answer})
@@ -694,7 +695,7 @@ def _practice_candidates(analysis: dict) -> list[dict[str, str]]:
         ]
         for value in legacy_values:
             normalized = re.sub(r"\s+", "", value["question"]).casefold()
-            if normalized not in seen:
+            if normalized not in seen and normalized not in excluded:
                 seen.add(normalized)
                 unique.append(value)
     return unique[:3]
@@ -728,9 +729,78 @@ def generate_practice(mistake_id: str, db: DbSession, user: CurrentUser) -> Mist
     now = datetime.now(timezone.utc)
     if mistake.next_review_at is not None and _utc(mistake.next_review_at) > now:
         raise HTTPException(status_code=409, detail=f"下一轮复习将在 {_utc(mistake.next_review_at).isoformat()} 开放")
-    candidates = _practice_candidates(mistake.analysis)
+    prior_practices = list(
+        db.scalars(
+            select(MistakePractice.question_text).where(
+                MistakePractice.mistake_id == mistake.id,
+                MistakePractice.user_id == user.id,
+            )
+        )
+    )
+    # Once a round has been completed, never fall back to the legacy single-
+    # practice fields: those fields can recreate the original question. New
+    # rounds must come from the fresh-variant generator.
+    candidates = [] if prior_practices else _practice_candidates(mistake.analysis)
+    generated_provider = "analysis"
+    generated_model = "mistake-analysis"
+    generated_usage: tuple[int | None, int | None] = (None, None)
     if len(candidates) < 2:
-        raise HTTPException(status_code=409, detail="分析结果不足两道有效练习，请重新分析错题")
+        source_question = (mistake.corrected_text or mistake.question_text or "").strip()
+        generation_started_at = start_model_timer()
+        try:
+            analysis_practices = mistake.analysis.get("similar_practices") or []
+            fallback_answer = next(
+                (str(item.get("answer_reference") or "").strip() for item in analysis_practices if isinstance(item, dict)),
+                None,
+            ) or str(mistake.analysis.get("answer_reference") or "").strip() or None
+            generated = generate_similar_practices(
+                question=source_question,
+                diagnosis=str(mistake.analysis.get("diagnosis") or ""),
+                error_category=mistake.error_category,
+                review_stage=mistake.review_stage,
+                excluded_questions=set(prior_practices),
+                answer_reference=fallback_answer,
+                nodes=retrieve_nodes(db, source_question, mistake.knowledge_node_id, limit=8, subject=mistake.subject),
+                chunks=retrieve_chunks(db, source_question, limit=8, subject=mistake.subject),
+            )
+        except RuntimeError as exc:
+            db.rollback()
+            raise HTTPException(status_code=502, detail="变式练习生成服务暂时不可用，请稍后重试") from exc
+        candidates = [
+            {
+                "question": item.question,
+                "hint": item.hint,
+                "answer_reference": item.answer_reference,
+            }
+            for item in generated.practices
+        ]
+        generated_provider = generated.provider
+        generated_model = generated.model
+        generated_usage = (generated.input_tokens, generated.output_tokens)
+    if len(candidates) < 2:
+        raise HTTPException(status_code=409, detail="无法生成两道不重复的有效练习，请补充题目后重试")
+    candidates = candidates[:3]
+    generated_text = moderation_text(
+        *[part for value in candidates for part in (value["question"], value["hint"], value["answer_reference"])]
+    )
+    generated_decision = moderate_text(generated_text)
+    if not generated_decision.allowed:
+        db.rollback()
+        record_safety_event(
+            db,
+            user_id=user.id,
+            action="safety.mistake_practice_output_blocked",
+            decision=generated_decision,
+            content=generated_text,
+            target_type="mistake",
+            target_id=mistake.id,
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=422,
+            detail="生成的练习触发内容安全保护，未保存。请稍后重试。",
+            headers={"X-Content-Safety": "blocked"},
+        )
     round_number = (db.scalar(
         select(func.max(MistakePracticeRound.round_number)).where(MistakePracticeRound.mistake_id == mistake.id)
     ) or 0) + 1
@@ -762,9 +832,27 @@ def generate_practice(mistake_id: str, db: DbSession, user: CurrentUser) -> Mist
             action="mistake.practice_round_started",
             target_type="mistake_practice_round",
             target_id=practice_round.id,
-            details={"mistake_id": mistake.id, "review_stage": mistake.review_stage, "question_count": len(candidates)},
+            details={
+                "mistake_id": mistake.id,
+                "review_stage": mistake.review_stage,
+                "question_count": len(candidates),
+                "provider": generated_provider,
+            },
         )
     )
+    if generated_provider != "analysis":
+        add_model_call(
+            db,
+            user_id=user.id,
+            feature="mistake_practice_generation",
+            provider=generated_provider,
+            model=generated_model,
+            success=True,
+            started_at=generation_started_at,
+            input_tokens=generated_usage[0],
+            output_tokens=generated_usage[1],
+            reference_id=practice_round.id,
+        )
     try:
         db.commit()
     except IntegrityError:

@@ -24,6 +24,15 @@ class MistakeAnalysisAiResult:
     model: str
 
 
+@dataclass(frozen=True)
+class PracticeGenerationResult:
+    practices: list[SimilarPracticeData]
+    input_tokens: int | None
+    output_tokens: int | None
+    provider: str
+    model: str
+
+
 def _stub_analysis(question: str, nodes: list[KnowledgeNode]) -> MistakeAnalysisData:
     suggested = nodes[0].id if nodes else None
     return MistakeAnalysisData(
@@ -54,6 +63,135 @@ def _stub_analysis(question: str, nodes: list[KnowledgeNode]) -> MistakeAnalysis
         ],
         uncertain=not bool(nodes),
     )
+
+
+def _stub_practice_variants(
+    question: str,
+    review_stage: str,
+    excluded: set[str],
+    answer_reference: str | None = None,
+) -> list[SimilarPracticeData]:
+    """Keep local/test deployments usable while guaranteeing fresh prompts."""
+    stage_label = {"correction": "订正", "next_day": "隔天复习", "next_week": "隔周复习"}.get(review_stage, review_stage)
+    templates = (
+        (f"{stage_label}变式一：请用同一方法重新解决：{question}", "先列出已知条件，再选择对应公式。"),
+        (f"{stage_label}变式二：请改变解题顺序后解决：{question}", "从目标倒推中间量，并检查定义域。"),
+        (f"{stage_label}变式三：请完成并核对这道变式题：{question}", "得出结论后代回原条件验证。"),
+    )
+    result: list[SimilarPracticeData] = []
+    for text, hint in templates:
+        normalized = re.sub(r"\s+", "", text).casefold()
+        if normalized in excluded:
+            continue
+        result.append(
+            SimilarPracticeData(
+                question=text,
+                hint=hint,
+                answer_reference=answer_reference or "按题目条件列式，完成推导并检查边界条件。",
+            )
+        )
+    return result[:3]
+
+
+def _parse_practice_list(content: str) -> list[SimilarPracticeData]:
+    cleaned = content.strip()
+    fenced = re.search(r"```(?:json)?\s*(\{.*\}|\[.*\])\s*```", cleaned, re.DOTALL)
+    if fenced:
+        cleaned = fenced.group(1)
+    elif not cleaned.startswith(("[", "{")):
+        object_match = re.search(r"(?:\[.*\]|\{.*\})", cleaned, re.DOTALL)
+        if object_match:
+            cleaned = object_match.group(0)
+    value = json.loads(cleaned)
+    if isinstance(value, dict):
+        value = value.get("similar_practices")
+    if not isinstance(value, list):
+        raise ValueError("Practice generation is not a list")
+    result: list[SimilarPracticeData] = []
+    seen: set[str] = set()
+    for item in value:
+        candidate = SimilarPracticeData.model_validate(item)
+        normalized = re.sub(r"\s+", "", candidate.question).casefold()
+        if normalized not in seen:
+            seen.add(normalized)
+            result.append(candidate)
+    if len(result) < 2:
+        raise ValueError("Practice generation returned fewer than two unique practices")
+    return result[:3]
+
+
+def generate_similar_practices(
+    *,
+    question: str,
+    diagnosis: str | None,
+    error_category: str | None,
+    review_stage: str,
+    excluded_questions: set[str],
+    answer_reference: str | None = None,
+    nodes: list[KnowledgeNode],
+    chunks: list[RetrievedChunk],
+) -> PracticeGenerationResult:
+    """Generate a fresh round without mutating the original mistake analysis."""
+    normalized_excluded = {re.sub(r"\s+", "", value).casefold() for value in excluded_questions}
+    if settings.ai_provider == "stub":
+        return PracticeGenerationResult(
+            _stub_practice_variants(question, review_stage, normalized_excluded, answer_reference),
+            None,
+            None,
+            "stub",
+            "practice-variant-stub",
+        )
+    if not settings.deepseek_api_key:
+        raise RuntimeError("DeepSeek API key is not configured")
+    candidate_context = "\n".join(f"- {node.name}: {node.definition[:300]}" for node in nodes[:6]) or "- 无可靠知识点候选"
+    reference_context = "\n\n".join(item.chunk.content[:700] for item in chunks[:4]) or "无额外资料"
+    previous = "\n".join(f"- {item}" for item in sorted(normalized_excluded)) or "无"
+    system_prompt = f"""你是高中错题复习题生成器。只生成与原题考查方法相同、数值或情境明确变化的练习，不要复制历史题目。
+必须输出 JSON 数组，数组包含恰好 3 个对象，每个对象字段固定为 question、hint、answer_reference；答案必须可核验且与题目一致。
+题目不要引用“上一题/原题”，避免依赖学生看不到的上下文。不要输出 Markdown 或额外说明。
+错因类型：{error_category or '未分类'}；复习阶段：{review_stage}；错因分析：{diagnosis or '无'}
+知识候选：\n{candidate_context}\n资料：\n{reference_context}\n历史题目指纹（不得重复）：\n{previous}"""
+    payload = {
+        "model": settings.deepseek_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"原题：{question}"},
+        ],
+        "temperature": 0.35,
+        "max_tokens": min(settings.deepseek_max_tokens, 3000),
+    }
+    headers = {"Authorization": f"Bearer {settings.deepseek_api_key}"}
+    last_error: Exception | None = None
+    for attempt in range(2):
+        try:
+            with httpx.Client(timeout=settings.deepseek_timeout_seconds) as client:
+                response = client.post(
+                    f"{settings.deepseek_base_url.rstrip('/')}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                )
+            if response.status_code in {429, 500, 502, 503, 504} and attempt == 0:
+                continue
+            response.raise_for_status()
+            body = response.json()
+            practices = [
+                item
+                for item in _parse_practice_list(body["choices"][0]["message"]["content"])
+                if re.sub(r"\s+", "", item.question).casefold() not in normalized_excluded
+            ][:3]
+            if len(practices) < 2:
+                raise ValueError("Practice generation repeated previous questions")
+            usage = body.get("usage") or {}
+            return PracticeGenerationResult(
+                practices,
+                usage.get("prompt_tokens"),
+                usage.get("completion_tokens"),
+                "deepseek",
+                body.get("model", settings.deepseek_model),
+            )
+        except (httpx.HTTPError, json.JSONDecodeError, KeyError, IndexError, TypeError, ValueError) as exc:
+            last_error = exc
+    raise RuntimeError("DeepSeek practice generation failed") from last_error
 
 
 def _parse_analysis(content: str) -> MistakeAnalysisData:
