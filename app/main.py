@@ -68,10 +68,13 @@ def health() -> HealthResponse:
     except Exception:
         database_status = "unavailable"
     release_issues = settings.release_readiness_issues
+    blocking_release_issues = [
+        issue for issue in release_issues if issue != "privacy_consent_not_enforced"
+    ]
     dependencies_ready = (
         (not settings.ai_enabled or settings.ai_ready)
         and settings.retrieval_ready
-        and not release_issues
+        and not blocking_release_issues
     )
     return HealthResponse(
         status="ok" if database_status == "ok" and dependencies_ready else "degraded",

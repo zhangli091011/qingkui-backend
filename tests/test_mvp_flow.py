@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from sqlalchemy import event
 
+from app.config import settings
 from app.db import engine
 from app.services.ai import HELP_GUIDANCE, MODE_GUIDANCE, QUESTION_POLICY
 
@@ -13,6 +14,29 @@ def test_health(client: TestClient):
     assert response.status_code == 200
     assert response.json()["ai_enabled"] is True
     assert response.json()["ai_ready"] is True
+
+
+def test_health_allows_documented_privacy_rollout_window(client: TestClient, monkeypatch) -> None:
+    values = {
+        "app_env": "production",
+        "privacy_consent_enforced": False,
+        "content_enforce_launch_scope": True,
+        "rate_limit_enabled": True,
+        "ai_provider": "stub",
+        "retrieval_provider": "lexical",
+        "oss_bucket": "private-test-bucket",
+        "oss_access_key_id": "test-access-key",
+        "oss_access_key_secret": "test-secret",
+    }
+    for name, value in values.items():
+        monkeypatch.setattr(settings, name, value)
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert response.json()["release_config_ready"] is False
+    assert response.json()["release_config_issues"] == ["privacy_consent_not_enforced"]
 
 
 def test_graph_qa_learning_and_credit_flow(client: TestClient, account):

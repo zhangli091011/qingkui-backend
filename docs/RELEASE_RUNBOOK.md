@@ -42,7 +42,7 @@
 - ACME 目录固定为 `/www/wwwroot/qingkui-api-acme`，续期钩子安装在 `/etc/letsencrypt/renewal-hooks/deploy/`。
 - 每次 Nginx 配置变更先执行 `nginx -t`；续期钩子也会先校验配置再重载。
 - 发布验收必须覆盖 HTTP 301、TLS 证书、`/health`、`/docs`、OpenAPI 和一条真实 SSE 问答。
-- `/health` 必须同时满足 `status=ok`、`release_config_ready=true`；试点/生产会检查隐私同意、首发内容范围、限流、模型、检索和私有 OSS 配置。
+- `/health` 必须满足 `status=ok`；试点/生产同时报告 `release_config_ready`，检查隐私同意、首发内容范围、限流、模型、检索和私有 OSS 配置。仅隐私版本灰度升级窗口可暂时保留 `privacy_consent_not_enforced`，且必须按本手册“兼容与升级”完成旧 APK 升级后关闭该例外；其余配置问题会使健康状态降级并阻止切流。
 
 ## 浏览器跨域
 
