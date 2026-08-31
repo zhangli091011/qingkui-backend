@@ -19,6 +19,8 @@ class RegisterRequest(BaseModel):
     email: EmailStr | None = None
     nickname: str | None = Field(default=None, min_length=1, max_length=40)
     device_name: str | None = Field(default=None, max_length=120)
+    privacy_consent: bool = False
+    privacy_notice_version: str | None = Field(default=None, max_length=40)
 
 
 class LoginRequest(BaseModel):
@@ -52,6 +54,18 @@ class PasswordResetConfirm(BaseModel):
 class PasswordResetRequestResponse(BaseModel):
     message: str
     reset_token: str | None = None
+
+
+class PrivacyConsentRequest(BaseModel):
+    accepted: bool
+    notice_version: str = Field(min_length=1, max_length=40)
+
+
+class PrivacyConsentResponse(BaseModel):
+    required: bool
+    required_version: str
+    accepted_version: str | None = None
+    accepted_at: datetime | None = None
 
 
 class UserResponse(ApiModel):
@@ -478,6 +492,8 @@ class MistakeWeeklyReview(BaseModel):
     error_categories: dict[str, int]
     weak_knowledge_points: list[dict]
     due_reviews: list[WeeklyMistakeLink]
+    upload_success_rate: float
+    ocr_correction_rate: float
     practice_completion_rate: float
     authoritative_accuracy: float
     second_attempt_accuracy: float

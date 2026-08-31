@@ -3,10 +3,12 @@ from typing import Annotated
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db import get_db
-from app.models import User, UserRole
+from app.models import User, UserPrivacyConsent, UserRole
 from app.security import decode_token
 
 
@@ -14,7 +16,7 @@ bearer = HTTPBearer(auto_error=False)
 DbSession = Annotated[Session, Depends(get_db)]
 
 
-def get_current_user(
+def get_authenticated_user(
     db: DbSession,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
 ) -> User:
@@ -27,6 +29,28 @@ def get_current_user(
     user = db.get(User, payload["sub"])
     if user is None or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="账户不可用")
+    return user
+
+
+AuthenticatedUser = Annotated[User, Depends(get_authenticated_user)]
+
+
+def get_current_user(db: DbSession, user: AuthenticatedUser) -> User:
+    if settings.app_env not in {"pilot", "production"} or user.role != UserRole.student:
+        return user
+    accepted = db.scalar(
+        select(UserPrivacyConsent.id).where(
+            UserPrivacyConsent.user_id == user.id,
+            UserPrivacyConsent.notice_version == settings.privacy_notice_version,
+            UserPrivacyConsent.withdrawn_at.is_(None),
+        )
+    )
+    if accepted is None:
+        raise HTTPException(
+            status_code=428,
+            detail="请先阅读并同意当前版本的隐私说明。",
+            headers={"X-Privacy-Notice-Version": settings.privacy_notice_version},
+        )
     return user
 
 

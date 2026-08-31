@@ -2,8 +2,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.db import SessionLocal
-from app.models import MistakePracticeRound, ModelCall, MistakeProblem
-from app.services.practice_validation import validate_practice_answer
+from app.models import AuditLog, MistakeAsset, MistakePracticeRound, ModelCall, MistakeProblem, OcrTask, utc_now
+from app.services.practice_validation import numeric_reference_is_consistent, validate_practice_answer
 
 
 def _create(client: TestClient, headers: dict[str, str], *, suffix: str = "") -> dict:
@@ -166,9 +166,10 @@ def test_three_stage_rounds_require_authoritative_answers_before_mastery(client:
         assert generated.status_code == 201, generated.text
         assert generated.json()["review_stage"] == expected_stage
         for practice in generated.json()["practices"]:
+            answer = practice["answer_reference"].split("：", 1)[-1]
             submitted = client.post(
                 f"/api/mistakes/{mistake['id']}/practices/{practice['id']}/submit",
-                json={"student_answer": "4", "is_correct": False},
+                json={"student_answer": answer, "is_correct": False},
                 headers=headers,
             )
             assert submitted.status_code == 200, submitted.text
@@ -312,3 +313,49 @@ def test_answer_validator_rejects_executable_expressions() -> None:
     result, details = validate_practice_answer("__import__('os').system('whoami')", "答案：4")
     assert result is None
     assert details["authoritative"] is False
+
+
+def test_generated_numeric_reference_must_match_question() -> None:
+    assert numeric_reference_is_consistent("计算 3+5 的值", "答案：8") is True
+    assert numeric_reference_is_consistent("计算 3+5 的值", "答案：9") is False
+    assert numeric_reference_is_consistent("证明正弦定理", "应写出完整证明") is None
+
+
+def test_weekly_review_reports_upload_and_ocr_correction_rates(client: TestClient, account) -> None:
+    auth, headers = account
+    mistake = _create(client, headers, suffix="（周指标）")
+    with SessionLocal() as db:
+        asset = MistakeAsset(
+            mistake_id=mistake["id"],
+            user_id=auth["user"]["id"],
+            object_key=f"test/{mistake['id']}.jpg",
+            mime_type="image/jpeg",
+            size_bytes=100,
+            checksum_sha256="a" * 64,
+            width=10,
+            height=10,
+            status="stored",
+        )
+        db.add(asset)
+        db.flush()
+        db.add(
+            OcrTask(
+                mistake_id=mistake["id"],
+                asset_id=asset.id,
+                user_id=auth["user"]["id"],
+                status="succeeded",
+                completed_at=utc_now(),
+            )
+        )
+        db.add_all(
+            [
+                AuditLog(actor_user_id=auth["user"]["id"], action="mistake.image_upload_attempted", target_type="mistake", target_id=mistake["id"]),
+                AuditLog(actor_user_id=auth["user"]["id"], action="mistake.image_upload_succeeded", target_type="mistake", target_id=mistake["id"]),
+                AuditLog(actor_user_id=auth["user"]["id"], action="mistake.ocr_confirmed", target_type="ocr_task", target_id=mistake["id"]),
+            ]
+        )
+        db.commit()
+    report = client.get("/api/mistakes/review/weekly", headers=headers)
+    assert report.status_code == 200, report.text
+    assert report.json()["upload_success_rate"] == 1.0
+    assert report.json()["ocr_correction_rate"] == 1.0

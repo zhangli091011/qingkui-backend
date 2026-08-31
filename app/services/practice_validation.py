@@ -72,6 +72,25 @@ def _eval_numeric(expression: str) -> float | None:
     return result if math.isfinite(result) else None
 
 
+def evaluate_numeric_expression(expression: str) -> float | None:
+    """Evaluate the small, side-effect-free numeric subset used by practice validation."""
+    return _eval_numeric(expression)
+
+
+def numeric_reference_is_consistent(question: str, answer_reference: str) -> bool | None:
+    """Check simple arithmetic generated questions; return None for unsupported question types."""
+    match = re.search(r"(-?\d+(?:\.\d+)?)\s*([+\-*/×÷])\s*(-?\d+(?:\.\d+)?)", question)
+    if match is None:
+        return None
+    expression = "".join(match.groups()).replace("×", "*").replace("÷", "/")
+    expected = _eval_numeric(expression)
+    referenced = _eval_numeric(_reference_candidate(answer_reference))
+    if expected is None or referenced is None:
+        return False
+    tolerance = max(1e-9, abs(expected) * 1e-9)
+    return abs(expected - referenced) <= tolerance
+
+
 def _reference_candidate(reference: str) -> str:
     normalized = reference.strip()
     matches = re.findall(r"(?:答案|结果|结论)\s*[:：]?\s*([^\n。；;]+)", normalized)

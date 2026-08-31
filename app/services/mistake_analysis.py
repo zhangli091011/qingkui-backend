@@ -10,6 +10,7 @@ from app.config import settings
 from app.models import KnowledgeNode
 from app.schemas import MistakeAnalysisData, SimilarPracticeData
 from app.services.knowledge import RetrievedChunk
+from app.services.practice_validation import evaluate_numeric_expression, numeric_reference_is_consistent
 
 
 PROMPT_VERSION = "mistake-analysis-v1"
@@ -35,6 +36,7 @@ class PracticeGenerationResult:
 
 def _stub_analysis(question: str, nodes: list[KnowledgeNode]) -> MistakeAnalysisData:
     suggested = nodes[0].id if nodes else None
+    practices = _stub_practice_variants(question, "correction", set())
     return MistakeAnalysisData(
         diagnosis="需要先核对题目条件，再对照正确方法定位学生过程中的首个偏差。",
         error_category="method",
@@ -42,25 +44,9 @@ def _stub_analysis(question: str, nodes: list[KnowledgeNode]) -> MistakeAnalysis
         correction_steps=["整理已知条件", "写出适用公式或定理", "逐步计算并检查结果"],
         suggested_node_id=suggested,
         node_confidence=0.7 if suggested else 0,
-        similar_question=f"请使用相同方法重新分析这道变式题：{question}",
-        answer_reference="按已知条件列式，完成推导后检查定义域、符号与最终结论。",
-        similar_practices=[
-            SimilarPracticeData(
-                question=f"变式一：请使用相同方法重新分析：{question}",
-                hint="先整理已知条件，再判断应使用的公式或定理。",
-                answer_reference="按已知条件列式，逐步推导并检查定义域、符号与结论。",
-            ),
-            SimilarPracticeData(
-                question=f"变式二：改变解题顺序后重新完成：{question}",
-                hint="尝试从目标倒推需要满足的中间条件。",
-                answer_reference="从目标所需条件倒推，再用题目已知量完成验证。",
-            ),
-            SimilarPracticeData(
-                question=f"变式三：写出完整检验过程并解答：{question}",
-                hint="完成计算后单独检查边界条件和特殊值。",
-                answer_reference="列式求解后验证边界、特殊值及最终答案是否满足原题。",
-            ),
-        ],
+        similar_question=practices[0].question if practices else f"请使用相同方法重新分析：{question}",
+        answer_reference=practices[0].answer_reference if practices else "需要人工核验后再生成练习。",
+        similar_practices=practices,
         uncertain=not bool(nodes),
     )
 
@@ -69,25 +55,35 @@ def _stub_practice_variants(
     question: str,
     review_stage: str,
     excluded: set[str],
-    answer_reference: str | None = None,
 ) -> list[SimilarPracticeData]:
-    """Keep local/test deployments usable while guaranteeing fresh prompts."""
+    """Generate only deterministic numeric variants in local/test deployments."""
     stage_label = {"correction": "订正", "next_day": "隔天复习", "next_week": "隔周复习"}.get(review_stage, review_stage)
-    templates = (
-        (f"{stage_label}变式一：请用同一方法重新解决：{question}", "先列出已知条件，再选择对应公式。"),
-        (f"{stage_label}变式二：请改变解题顺序后解决：{question}", "从目标倒推中间量，并检查定义域。"),
-        (f"{stage_label}变式三：请完成并核对这道变式题：{question}", "得出结论后代回原条件验证。"),
-    )
+    match = re.search(r"(-?\d+(?:\.\d+)?)\s*([+\-*/×÷])\s*(-?\d+(?:\.\d+)?)", question)
+    if match is None:
+        return []
+    left, operator, right = float(match.group(1)), match.group(2), float(match.group(3))
+    normalized_operator = {"×": "*", "÷": "/"}.get(operator, operator)
+    offset = {"correction": 1, "next_day": 4, "next_week": 7}.get(review_stage, 10)
+
+    def display(value: float) -> str:
+        return str(int(value)) if value.is_integer() else f"{value:.6g}"
+
+    values = ((left + offset, right), (left, right + offset), (left + offset + 1, right + offset + 1))
     result: list[SimilarPracticeData] = []
-    for text, hint in templates:
+    for index, (variant_left, variant_right) in enumerate(values, start=1):
+        expression = f"{display(variant_left)}{normalized_operator}{display(variant_right)}"
+        numeric_answer = evaluate_numeric_expression(expression)
+        if numeric_answer is None:
+            continue
+        text = f"{stage_label}变式{index}：计算 {display(variant_left)}{operator}{display(variant_right)} 的值。"
         normalized = re.sub(r"\s+", "", text).casefold()
         if normalized in excluded:
             continue
         result.append(
             SimilarPracticeData(
                 question=text,
-                hint=hint,
-                answer_reference=answer_reference or "按题目条件列式，完成推导并检查边界条件。",
+                hint="先确定运算顺序，计算后用逆运算检查。",
+                answer_reference=f"答案：{display(numeric_answer)}",
             )
         )
     return result[:3]
@@ -127,7 +123,6 @@ def generate_similar_practices(
     error_category: str | None,
     review_stage: str,
     excluded_questions: set[str],
-    answer_reference: str | None = None,
     nodes: list[KnowledgeNode],
     chunks: list[RetrievedChunk],
 ) -> PracticeGenerationResult:
@@ -135,7 +130,7 @@ def generate_similar_practices(
     normalized_excluded = {re.sub(r"\s+", "", value).casefold() for value in excluded_questions}
     if settings.ai_provider == "stub":
         return PracticeGenerationResult(
-            _stub_practice_variants(question, review_stage, normalized_excluded, answer_reference),
+            _stub_practice_variants(question, review_stage, normalized_excluded),
             None,
             None,
             "stub",
@@ -178,6 +173,7 @@ def generate_similar_practices(
                 item
                 for item in _parse_practice_list(body["choices"][0]["message"]["content"])
                 if re.sub(r"\s+", "", item.question).casefold() not in normalized_excluded
+                and numeric_reference_is_consistent(item.question, item.answer_reference) is not False
             ][:3]
             if len(practices) < 2:
                 raise ValueError("Practice generation repeated previous questions")

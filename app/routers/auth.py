@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import select, update
 
 from app.config import settings
-from app.deps import CurrentUser, DbSession
+from app.deps import AuthenticatedUser, CurrentUser, DbSession
 from app.models import (
     AuditLog,
     CreditAccount,
@@ -15,6 +15,7 @@ from app.models import (
     RefreshSession,
     PasswordResetToken,
     User,
+    UserPrivacyConsent,
 )
 from app.schemas import (
     AuthResponse,
@@ -27,6 +28,8 @@ from app.schemas import (
     PasswordResetRequest,
     PasswordResetConfirm,
     PasswordResetRequestResponse,
+    PrivacyConsentRequest,
+    PrivacyConsentResponse,
     RegisterRequest,
     UserResponse,
 )
@@ -47,6 +50,18 @@ def _session_is_active(session: RefreshSession, now: datetime) -> bool:
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
     return session.revoked_at is None and expires_at > now
+
+
+def _current_privacy_consent(db: DbSession, user_id: str) -> UserPrivacyConsent | None:
+    return db.scalar(
+        select(UserPrivacyConsent)
+        .where(
+            UserPrivacyConsent.user_id == user_id,
+            UserPrivacyConsent.notice_version == settings.privacy_notice_version,
+            UserPrivacyConsent.withdrawn_at.is_(None),
+        )
+        .order_by(UserPrivacyConsent.accepted_at.desc())
+    )
 
 
 def _issue_tokens(db: DbSession, user: User, device_name: str | None) -> AuthResponse:
@@ -71,6 +86,13 @@ def _issue_tokens(db: DbSession, user: User, device_name: str | None) -> AuthRes
 
 @router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
 def register(payload: RegisterRequest, db: DbSession) -> AuthResponse:
+    if settings.app_env in {"pilot", "production"} and (
+        not payload.privacy_consent or payload.privacy_notice_version != settings.privacy_notice_version
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="请阅读并同意当前版本的隐私说明后再注册；应用版本过旧时请先更新。",
+        )
     username = payload.username.lower()
     if db.scalar(select(User.id).where(User.username == username)):
         raise HTTPException(status_code=409, detail="用户名已存在")
@@ -85,6 +107,13 @@ def register(payload: RegisterRequest, db: DbSession) -> AuthResponse:
     )
     db.add(user)
     db.flush()
+    if payload.privacy_consent:
+        db.add(
+            UserPrivacyConsent(
+                user_id=user.id,
+                notice_version=payload.privacy_notice_version or settings.privacy_notice_version,
+            )
+        )
     account = CreditAccount(user_id=user.id, balance=settings.initial_credits)
     db.add(account)
     db.flush()
@@ -97,7 +126,15 @@ def register(payload: RegisterRequest, db: DbSession) -> AuthResponse:
             feature="registration",
         )
     )
-    db.add(AuditLog(actor_user_id=user.id, action="user.register", target_type="user", target_id=user.id))
+    db.add(
+        AuditLog(
+            actor_user_id=user.id,
+            action="user.register",
+            target_type="user",
+            target_id=user.id,
+            details={"privacy_notice_version": payload.privacy_notice_version if payload.privacy_consent else None},
+        )
+    )
     db.commit()
     db.refresh(user)
     return _issue_tokens(db, user, payload.device_name)
@@ -150,6 +187,49 @@ def logout(payload: LogoutRequest, db: DbSession) -> MessageResponse:
 @router.get("/me", response_model=UserResponse)
 def me(user: CurrentUser) -> User:
     return user
+
+
+@router.get("/privacy-consent", response_model=PrivacyConsentResponse)
+def privacy_consent_status(db: DbSession, user: AuthenticatedUser) -> PrivacyConsentResponse:
+    consent = _current_privacy_consent(db, user.id)
+    return PrivacyConsentResponse(
+        required=consent is None,
+        required_version=settings.privacy_notice_version,
+        accepted_version=consent.notice_version if consent else None,
+        accepted_at=consent.accepted_at if consent else None,
+    )
+
+
+@router.post("/privacy-consent", response_model=PrivacyConsentResponse)
+def accept_privacy_consent(
+    payload: PrivacyConsentRequest,
+    db: DbSession,
+    user: AuthenticatedUser,
+) -> PrivacyConsentResponse:
+    if not payload.accepted or payload.notice_version != settings.privacy_notice_version:
+        raise HTTPException(status_code=422, detail="只能接受当前版本的隐私说明。")
+    consent = _current_privacy_consent(db, user.id)
+    if consent is None:
+        consent = UserPrivacyConsent(user_id=user.id, notice_version=settings.privacy_notice_version)
+        db.add(consent)
+        db.flush()
+        db.add(
+            AuditLog(
+                actor_user_id=user.id,
+                action="privacy.consent_accepted",
+                target_type="privacy_consent",
+                target_id=consent.id,
+                details={"notice_version": settings.privacy_notice_version},
+            )
+        )
+        db.commit()
+        db.refresh(consent)
+    return PrivacyConsentResponse(
+        required=False,
+        required_version=settings.privacy_notice_version,
+        accepted_version=consent.notice_version,
+        accepted_at=consent.accepted_at,
+    )
 
 
 @router.get("/sessions", response_model=list[DeviceSessionResponse])

@@ -88,6 +88,16 @@ class RefreshSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class UserPrivacyConsent(Base):
+    __tablename__ = "user_privacy_consents"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    notice_version: Mapped[str] = mapped_column(String(40), index=True)
+    accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class PasswordResetToken(Base):
     __tablename__ = "password_reset_tokens"
 

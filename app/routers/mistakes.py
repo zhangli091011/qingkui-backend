@@ -223,6 +223,27 @@ def weekly_review(
     next_week_completed_ids = {
         item.mistake_id for item in rounds if item.review_stage == "next_week" and item.status == "completed"
     }
+    upload_events = list(
+        db.scalars(
+            select(AuditLog).where(
+                AuditLog.actor_user_id == user.id,
+                AuditLog.action.in_(("mistake.image_upload_attempted", "mistake.image_upload_succeeded", "mistake.ocr_confirmed")),
+                AuditLog.created_at >= start_at,
+                AuditLog.created_at < end_at,
+            )
+        )
+    )
+    upload_attempts = sum(item.action == "mistake.image_upload_attempted" for item in upload_events)
+    upload_successes = sum(item.action == "mistake.image_upload_succeeded" for item in upload_events)
+    ocr_confirmed = sum(item.action == "mistake.ocr_confirmed" for item in upload_events)
+    ocr_completed = db.scalar(
+        select(func.count(OcrTask.id)).where(
+            OcrTask.user_id == user.id,
+            OcrTask.status == "succeeded",
+            OcrTask.completed_at >= start_at,
+            OcrTask.completed_at < end_at,
+        )
+    ) or 0
 
     def ratio(numerator: int, denominator: int) -> float:
         return round(numerator / denominator, 4) if denominator else 0.0
@@ -234,6 +255,8 @@ def weekly_review(
         error_categories=dict(category_counts),
         weak_knowledge_points=weak_nodes,
         due_reviews=due_links,
+        upload_success_rate=ratio(upload_successes, upload_attempts),
+        ocr_correction_rate=ratio(ocr_confirmed, ocr_completed),
         practice_completion_rate=ratio(len(completed), len(weekly_rounds)),
         authoritative_accuracy=ratio(sum(item.is_correct is True for item in authoritative), len(authoritative)),
         second_attempt_accuracy=ratio(sum(item.second_attempt_correct is True for item in second_attempts), len(second_attempts)),
@@ -748,18 +771,12 @@ def generate_practice(mistake_id: str, db: DbSession, user: CurrentUser) -> Mist
         source_question = (mistake.corrected_text or mistake.question_text or "").strip()
         generation_started_at = start_model_timer()
         try:
-            analysis_practices = mistake.analysis.get("similar_practices") or []
-            fallback_answer = next(
-                (str(item.get("answer_reference") or "").strip() for item in analysis_practices if isinstance(item, dict)),
-                None,
-            ) or str(mistake.analysis.get("answer_reference") or "").strip() or None
             generated = generate_similar_practices(
                 question=source_question,
                 diagnosis=str(mistake.analysis.get("diagnosis") or ""),
                 error_category=mistake.error_category,
                 review_stage=mistake.review_stage,
                 excluded_questions=set(prior_practices),
-                answer_reference=fallback_answer,
                 nodes=retrieve_nodes(db, source_question, mistake.knowledge_node_id, limit=8, subject=mistake.subject),
                 chunks=retrieve_chunks(db, source_question, limit=8, subject=mistake.subject),
             )
