@@ -98,6 +98,7 @@ class Settings(BaseSettings):
     user_upload_max_bytes: int = 10 * 1024 * 1024
     user_upload_max_pixels: int = 20_000_000
     organizations_enabled: bool = False
+    pilot_authorization_enforced: bool = False
     idempotency_retention_hours: int = 24
     credit_campaigns_enabled: bool = False
     contributions_enabled: bool = False
@@ -122,6 +123,14 @@ class Settings(BaseSettings):
     def validate_production_secrets(self) -> "Settings":
         if self.app_env in {"pilot", "production"} and self.jwt_secret.startswith("development-"):
             raise ValueError("JWT_SECRET must be changed in production")
+        if (
+            self.app_env in {"pilot", "production"}
+            and self.organizations_enabled
+            and not self.pilot_authorization_enforced
+        ):
+            raise ValueError("PILOT_AUTHORIZATION_ENFORCED must be enabled before school features")
+        if self.contribution_rewards_enabled and not self.contributions_enabled:
+            raise ValueError("CONTRIBUTIONS_ENABLED must be enabled before contribution rewards")
         return self
 
     @property
@@ -131,6 +140,29 @@ class Settings(BaseSettings):
     @property
     def retrieval_ready(self) -> bool:
         return self.retrieval_provider == "lexical" or bool(self.dashscope_api_key)
+
+    @property
+    def object_storage_ready(self) -> bool:
+        return bool(self.oss_bucket and self.oss_access_key_id and self.oss_access_key_secret)
+
+    @property
+    def release_readiness_issues(self) -> list[str]:
+        if self.app_env not in {"pilot", "production"}:
+            return []
+        issues: list[str] = []
+        if not self.privacy_consent_enforced:
+            issues.append("privacy_consent_not_enforced")
+        if not self.content_enforce_launch_scope:
+            issues.append("content_launch_scope_not_enforced")
+        if not self.rate_limit_enabled:
+            issues.append("rate_limit_not_enabled")
+        if self.ai_enabled and not self.ai_ready:
+            issues.append("ai_provider_not_ready")
+        if not self.retrieval_ready:
+            issues.append("retrieval_provider_not_ready")
+        if not self.object_storage_ready:
+            issues.append("private_object_storage_not_ready")
+        return issues
 
 
 @lru_cache

@@ -16,5 +16,7 @@
 3. Android Release 构建必须使用 HTTPS；明文 HTTP 只允许 Debug manifest。
 4. 配置变化必须先在 test 通过 CI，再进入 pilot；production 只接受已验证的同一 Git commit。
 5. 每次部署记录 Git SHA、数据库 revision、APK versionCode、向量索引 SHA-256 和回滚目标。
+6. 试点与生产切流前要求 `/health` 返回 `release_config_ready=true`；该门检查隐私同意、首发内容范围、限流、模型、检索和私有 OSS 配置。
+7. 启用学校能力必须同时启用 `PILOT_AUTHORIZATION_ENFORCED`，并在发放学生邀请码前逐人完成准入登记。
 
 试点与生产默认启用内容发布范围门：首发只允许 `数学 / 高一 / 人教A版`。改变范围必须先生成内容治理报告，并完成来源授权、公式复核和关系完整性审核。

@@ -1,6 +1,6 @@
 # 青葵计划后端
 
-FastAPI 单体服务，面向 Android MVP。当前实现账户、知识图谱、分场景问答、学习记录、额度和反馈闭环；OCR、对象上传和审核队列留到 V1.1。
+FastAPI 单体服务，面向 Android MVP。当前实现账户、知识图谱、分场景问答、学习记录、额度、反馈、错题 OCR、私有对象上传和审核队列闭环。
 
 问答检索采用“知识图谱节点 + 授权文档片段”的混合上下文。文档可使用阿里百炼 `text-embedding-v4` 向量化，并由 `gte-rerank-v2` 重排；百炼暂时不可用时自动回退到本地关键词检索。
 
@@ -122,7 +122,7 @@ DEEPSEEK_MODEL=deepseek-v4-flash
 | 额度调整 | `POST /api/admin/credits/{user_id}/adjust` |
 | 成本与审计 | `GET /api/admin/model-costs`、`/audit-logs` |
 
-V2 学校、班级、邀请码和匿名教师概览已具备隔离模型与接口，但默认由 `ORGANIZATIONS_ENABLED=false` 关闭。启用前必须完成学校授权和未成年人数据边界确认，详见 `docs/ORGANIZATIONS.md`。
+V2 学校、班级、邀请码、逐人试点准入和匿名教师概览已具备隔离模型与接口，但默认由 `ORGANIZATIONS_ENABLED=false` 关闭。试点或生产启用时必须同时设置 `PILOT_AUTHORIZATION_ENFORCED=true`，详见 `docs/ORGANIZATIONS.md`。
 
 所有业务接口使用 `Authorization: Bearer <access_token>`。DeepSeek 密钥只保存在服务端环境变量中。普通问答消耗 1 额度，完整解析消耗 2 额度；供应商失败时数据库事务回滚，不扣额度。
 

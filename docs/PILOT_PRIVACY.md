@@ -7,7 +7,7 @@
 - 仅面向已批准的 5-10 人设备组发布，不公开分发安装包。
 - 试点负责人应明确参与范围、使用期限、退出联系人、数据处理者和事故联系人。
 - 未成年人参加前，由负责人完成适用的学校和监护人告知、授权及退出安排；应用内登录不视为替代授权。
-- `ORGANIZATIONS_ENABLED=false`、`CREDIT_CAMPAIGNS_ENABLED=false`、`CONTRIBUTIONS_ENABLED=false` 和 `CONTRIBUTION_REWARDS_ENABLED=false` 保持关闭，除非对应能力另行通过审核。
+- `ORGANIZATIONS_ENABLED=false`、`CREDIT_CAMPAIGNS_ENABLED=false`、`CONTRIBUTIONS_ENABLED=false` 和 `CONTRIBUTION_REWARDS_ENABLED=false` 保持关闭，除非对应能力另行通过审核。启用学校能力时必须同时设置 `PILOT_AUTHORIZATION_ENFORCED=true` 并逐人登记准入确认。
 
 ## 数据最小化
 
@@ -24,6 +24,7 @@ Android 客户端不保存 OSS 或模型服务密钥。错题图片保存在私�
 - 学生只访问自己的账户、会话、学习记录、错题和反馈。
 - 系统管理员只因故障处理、内容审核、额度核对或数据清理访问必要信息，并由审计日志记录管理操作。
 - 学校/班级能力默认关闭。启用后，教师概览只返回班级聚合和稳定匿名学生 ID，不返回用户名、昵称、题目、回答、笔记、反馈正文或图片。
+- 学生邀请码在写入成员关系前校验有效准入，撤销准入会同步停用学校和班级成员关系；授权依据只记录文件编号或确认方式。
 - 任何实名教师视图都必须另行记录授权范围、授权人、目的和有效期，不能沿用匿名概览授权。
 
 ## 删除、退出与备份

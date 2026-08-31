@@ -64,3 +64,13 @@
 - 学习页：`GET learning/summary`
 
 客户端不能直接把状态改成 `verified`。只有 `completed_check` 且 `event_data.passed=true` 的学习事件可以产生“已验证”。
+
+## 学校与匿名班级趋势
+
+- 当前用户学校：`GET organizations/me`
+- 学校班级：`GET organizations/schools/{school_id}/classes`
+- 使用邀请码：`POST organizations/invites/redeem`
+- 退出学校：`DELETE organizations/schools/{school_id}/membership`
+- 教师匿名概览：`GET organizations/classes/{class_id}/overview`
+
+学生邀请码可能返回 403“尚未完成学校试点准入授权”，客户端应原样提示联系学校管理员，不应重试或自行绕过。教师概览新增 `top_error_categories`、`weak_knowledge_points`、`practice_completion_rate`、`second_attempt_accuracy` 和 `due_review_count`；前两项只包含显示名称与计数，不包含知识节点 ID 或学生身份。

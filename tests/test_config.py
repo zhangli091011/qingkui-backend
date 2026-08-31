@@ -46,3 +46,48 @@ def test_deployment_environments_reject_development_secret(app_env: str) -> None
             app_env=app_env,
             jwt_secret="development-only-secret-change-before-deploy",
         )
+
+
+@pytest.mark.parametrize("app_env", ["pilot", "production"])
+def test_school_features_require_pilot_authorization_gate(app_env: str) -> None:
+    with pytest.raises(ValidationError, match="PILOT_AUTHORIZATION_ENFORCED"):
+        Settings(
+            _env_file=None,
+            app_env=app_env,
+            jwt_secret="release-secret-that-is-not-a-development-default",
+            organizations_enabled=True,
+            pilot_authorization_enforced=False,
+        )
+
+
+def test_contribution_rewards_require_contributions() -> None:
+    with pytest.raises(ValidationError, match="CONTRIBUTIONS_ENABLED"):
+        Settings(
+            _env_file=None,
+            contributions_enabled=False,
+            contribution_rewards_enabled=True,
+        )
+
+
+def test_release_readiness_lists_missing_operational_gates() -> None:
+    release = Settings(
+        _env_file=None,
+        app_env="production",
+        jwt_secret="release-secret-that-is-not-a-development-default",
+        privacy_consent_enforced=False,
+        content_enforce_launch_scope=False,
+        rate_limit_enabled=False,
+        ai_provider="deepseek",
+        deepseek_api_key=None,
+        retrieval_provider="bailian",
+        dashscope_api_key=None,
+    )
+
+    assert set(release.release_readiness_issues) == {
+        "privacy_consent_not_enforced",
+        "content_launch_scope_not_enforced",
+        "rate_limit_not_enabled",
+        "ai_provider_not_ready",
+        "retrieval_provider_not_ready",
+        "private_object_storage_not_ready",
+    }

@@ -374,7 +374,7 @@ def test_admin_page_exposes_review_workspaces(client) -> None:
     assert "OCR 任务审核" in response.text
     assert "错题内容审核" in response.text
     assert "投稿审核" in response.text
-    assert "学校、班级与邀请码" in response.text
+    assert "学校、班级与试点准入" in response.text
     assert "活动额度" in response.text
     assert "运行告警" in response.text
     assert "innerHTML" not in response.text

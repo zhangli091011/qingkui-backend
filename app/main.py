@@ -67,8 +67,14 @@ def health() -> HealthResponse:
             connection.execute(text("SELECT 1"))
     except Exception:
         database_status = "unavailable"
+    release_issues = settings.release_readiness_issues
+    dependencies_ready = (
+        (not settings.ai_enabled or settings.ai_ready)
+        and settings.retrieval_ready
+        and not release_issues
+    )
     return HealthResponse(
-        status="ok" if database_status == "ok" else "degraded",
+        status="ok" if database_status == "ok" and dependencies_ready else "degraded",
         database=database_status,
         ai_enabled=settings.ai_enabled,
         ai_provider=settings.ai_provider,
@@ -81,4 +87,7 @@ def health() -> HealthResponse:
             else "lexical"
         ),
         retrieval_ready=settings.retrieval_ready,
+        object_storage_ready=settings.object_storage_ready,
+        release_config_ready=not release_issues,
+        release_config_issues=release_issues,
     )

@@ -167,6 +167,42 @@ class OrganizationJoinResponse(BaseModel):
     joined: bool
 
 
+class PilotEnrollmentApprovalCreate(BaseModel):
+    user_id: str = Field(min_length=36, max_length=36)
+    school_authorization_confirmed: bool
+    voluntary_participation_confirmed: bool
+    guardian_authorization_required: bool = True
+    guardian_authorization_confirmed: bool = False
+    approval_basis: str = Field(min_length=2, max_length=500)
+
+    @field_validator("approval_basis")
+    @classmethod
+    def approval_basis_must_not_contain_identity_fields(cls, value: str) -> str:
+        cleaned = value.strip()
+        forbidden = ("姓名", "手机号", "联系电话", "身份证", "邮箱", "家庭住址", "家庭地址", "收货地址")
+        if any(marker in cleaned for marker in forbidden):
+            raise ValueError("授权依据只能记录文件编号或确认方式，不能包含个人身份与联系方式")
+        return cleaned
+
+
+class PilotEnrollmentApprovalResponse(ApiModel):
+    id: str
+    school_id: str
+    user_id: str
+    username: str
+    status: str
+    school_authorization_confirmed: bool
+    voluntary_participation_confirmed: bool
+    guardian_authorization_required: bool
+    guardian_authorization_confirmed: bool
+    approval_basis: str
+    approved_by: str | None
+    approved_at: datetime
+    revoked_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
 class ClassStudentOverview(BaseModel):
     anonymous_id: str
     joined_at: datetime
@@ -176,6 +212,11 @@ class ClassStudentOverview(BaseModel):
     verified_nodes: int
 
 
+class ClassAggregateCount(BaseModel):
+    label: str
+    count: int
+
+
 class ClassOverviewResponse(BaseModel):
     classroom: SchoolClassResponse
     student_count: int
@@ -183,6 +224,11 @@ class ClassOverviewResponse(BaseModel):
     questions: int
     mistakes: int
     verified_nodes: int
+    top_error_categories: list[ClassAggregateCount]
+    weak_knowledge_points: list[ClassAggregateCount]
+    practice_completion_rate: float
+    second_attempt_accuracy: float
+    due_review_count: int
     students: list[ClassStudentOverview]
 
 
@@ -1139,3 +1185,6 @@ class HealthResponse(BaseModel):
     retrieval_provider: str
     retrieval_model: str
     retrieval_ready: bool
+    object_storage_ready: bool
+    release_config_ready: bool
+    release_config_issues: list[str]

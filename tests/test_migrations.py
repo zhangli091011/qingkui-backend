@@ -13,11 +13,12 @@ def test_full_migration_round_trip_on_empty_database(tmp_path, monkeypatch) -> N
     command.upgrade(config, "head")
     engine = create_engine(database_url)
     with engine.connect() as connection:
-        assert connection.execute(text("select version_num from alembic_version")).scalar_one() == "20260831_0021"
+        assert connection.execute(text("select version_num from alembic_version")).scalar_one() == "20260901_0022"
         assert "idempotency_requests" in inspect(connection).get_table_names()
         assert "learning_check_attempts" in inspect(connection).get_table_names()
         assert "mistake_practice_rounds" in inspect(connection).get_table_names()
         assert "password_reset_tokens" in inspect(connection).get_table_names()
+        assert "pilot_enrollment_approvals" in inspect(connection).get_table_names()
     engine.dispose()
 
     command.downgrade(config, "base")
@@ -29,9 +30,10 @@ def test_full_migration_round_trip_on_empty_database(tmp_path, monkeypatch) -> N
     command.upgrade(config, "head")
     engine = create_engine(database_url)
     with engine.connect() as connection:
-        assert connection.execute(text("select version_num from alembic_version")).scalar_one() == "20260831_0021"
+        assert connection.execute(text("select version_num from alembic_version")).scalar_one() == "20260901_0022"
         assert "idempotency_requests" in inspect(connection).get_table_names()
         assert "learning_check_attempts" in inspect(connection).get_table_names()
         assert "mistake_practice_rounds" in inspect(connection).get_table_names()
         assert "password_reset_tokens" in inspect(connection).get_table_names()
+        assert "pilot_enrollment_approvals" in inspect(connection).get_table_names()
     engine.dispose()

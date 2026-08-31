@@ -14,11 +14,14 @@ from app.models import (
     AuditLog,
     ClassMembership,
     Conversation,
+    KnowledgeNode,
     KnowledgeStatus,
     LearningEvent,
     Message,
     MistakeProblem,
+    MistakePracticeRound,
     OrganizationInvite,
+    PilotEnrollmentApproval,
     School,
     SchoolClass,
     SchoolMembership,
@@ -34,12 +37,15 @@ from app.schemas import (
     OrganizationInviteResponse,
     OrganizationJoinResponse,
     OrganizationMeResponse,
+    PilotEnrollmentApprovalCreate,
+    PilotEnrollmentApprovalResponse,
     SchoolClassCreate,
     SchoolClassResponse,
     SchoolCreate,
     SchoolMembershipResponse,
     SchoolResponse,
 )
+from app.services.content_safety import moderate_text, record_safety_event
 
 
 router = APIRouter(prefix="/organizations", tags=["学校与班级"])
@@ -96,6 +102,45 @@ def _classroom(db: DbSession, class_id: str) -> SchoolClass:
     if classroom is None or classroom.status != "active":
         raise HTTPException(status_code=404, detail="班级不存在")
     return classroom
+
+
+def _pilot_approval_is_valid(approval: PilotEnrollmentApproval | None) -> bool:
+    return bool(
+        approval
+        and approval.status == "approved"
+        and approval.school_authorization_confirmed
+        and approval.voluntary_participation_confirmed
+        and (
+            not approval.guardian_authorization_required
+            or approval.guardian_authorization_confirmed
+        )
+        and approval.revoked_at is None
+    )
+
+
+def _pilot_approval_response(
+    approval: PilotEnrollmentApproval,
+    username: str,
+) -> PilotEnrollmentApprovalResponse:
+    return PilotEnrollmentApprovalResponse.model_validate(
+        {
+            "id": approval.id,
+            "school_id": approval.school_id,
+            "user_id": approval.user_id,
+            "username": username,
+            "status": approval.status,
+            "school_authorization_confirmed": approval.school_authorization_confirmed,
+            "voluntary_participation_confirmed": approval.voluntary_participation_confirmed,
+            "guardian_authorization_required": approval.guardian_authorization_required,
+            "guardian_authorization_confirmed": approval.guardian_authorization_confirmed,
+            "approval_basis": approval.approval_basis,
+            "approved_by": approval.approved_by,
+            "approved_at": approval.approved_at,
+            "revoked_at": approval.revoked_at,
+            "created_at": approval.created_at,
+            "updated_at": approval.updated_at,
+        }
+    )
 
 
 @router.post("/schools", response_model=SchoolResponse, status_code=status.HTTP_201_CREATED)
@@ -226,6 +271,170 @@ def create_class(
     return classroom
 
 
+@router.get(
+    "/schools/{school_id}/pilot-approvals",
+    response_model=list[PilotEnrollmentApprovalResponse],
+)
+def list_pilot_approvals(
+    school_id: str,
+    db: DbSession,
+    user: CurrentUser,
+) -> list[PilotEnrollmentApprovalResponse]:
+    _enabled()
+    school = db.get(School, school_id)
+    if school is None or school.status != "active":
+        raise HTTPException(status_code=404, detail="学校不存在")
+    _require_school_role(db, user, school_id, {"school_admin"})
+    rows = db.execute(
+        select(PilotEnrollmentApproval, User.username)
+        .join(User, User.id == PilotEnrollmentApproval.user_id)
+        .where(PilotEnrollmentApproval.school_id == school_id)
+        .order_by(PilotEnrollmentApproval.updated_at.desc())
+    ).all()
+    return [_pilot_approval_response(approval, username) for approval, username in rows]
+
+
+@router.post(
+    "/schools/{school_id}/pilot-approvals",
+    response_model=PilotEnrollmentApprovalResponse,
+)
+def approve_pilot_enrollment(
+    school_id: str,
+    payload: PilotEnrollmentApprovalCreate,
+    db: DbSession,
+    user: CurrentUser,
+) -> PilotEnrollmentApprovalResponse:
+    _enabled()
+    school = db.get(School, school_id)
+    if school is None or school.status != "active":
+        raise HTTPException(status_code=404, detail="学校不存在")
+    _require_school_role(db, user, school_id, {"school_admin"})
+    participant = db.get(User, payload.user_id)
+    if participant is None or not participant.is_active:
+        raise HTTPException(status_code=404, detail="参与者账户不存在或不可用")
+    if not payload.school_authorization_confirmed or not payload.voluntary_participation_confirmed:
+        raise HTTPException(status_code=422, detail="必须确认学校授权和参与者自愿参与")
+    if payload.guardian_authorization_required and not payload.guardian_authorization_confirmed:
+        raise HTTPException(status_code=422, detail="该参与者需要监护人授权确认")
+    safety = moderate_text(payload.approval_basis)
+    if not safety.allowed:
+        record_safety_event(
+            db,
+            user_id=user.id,
+            action="pilot.enrollment_approval_blocked",
+            decision=safety,
+            content=payload.approval_basis,
+            target_type="school",
+            target_id=school_id,
+        )
+        db.commit()
+        raise HTTPException(status_code=422, detail="授权依据不能包含个人身份或联系方式")
+
+    now = datetime.now(timezone.utc)
+    approval = db.scalar(
+        select(PilotEnrollmentApproval).where(
+            PilotEnrollmentApproval.school_id == school_id,
+            PilotEnrollmentApproval.user_id == participant.id,
+        )
+    )
+    if approval is None:
+        approval = PilotEnrollmentApproval(
+            school_id=school_id,
+            user_id=participant.id,
+            approval_basis=payload.approval_basis.strip(),
+        )
+        db.add(approval)
+    approval.status = "approved"
+    approval.school_authorization_confirmed = payload.school_authorization_confirmed
+    approval.voluntary_participation_confirmed = payload.voluntary_participation_confirmed
+    approval.guardian_authorization_required = payload.guardian_authorization_required
+    approval.guardian_authorization_confirmed = payload.guardian_authorization_confirmed
+    approval.approval_basis = payload.approval_basis.strip()
+    approval.approved_by = user.id
+    approval.approved_at = now
+    approval.revoked_at = None
+    db.flush()
+    db.add(
+        AuditLog(
+            actor_user_id=user.id,
+            action="pilot.enrollment_approved",
+            target_type="pilot_enrollment_approval",
+            target_id=approval.id,
+            details={
+                "school_id": school_id,
+                "user_id": participant.id,
+                "school_authorized": True,
+                "voluntary": True,
+                "guardian_required": approval.guardian_authorization_required,
+                "guardian_confirmed": approval.guardian_authorization_confirmed,
+                "approval_basis_recorded": bool(approval.approval_basis),
+            },
+        )
+    )
+    db.commit()
+    db.refresh(approval)
+    return _pilot_approval_response(approval, participant.username)
+
+
+@router.delete(
+    "/schools/{school_id}/pilot-approvals/{participant_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def revoke_pilot_enrollment(
+    school_id: str,
+    participant_id: str,
+    db: DbSession,
+    user: CurrentUser,
+) -> Response:
+    _enabled()
+    school = db.get(School, school_id)
+    if school is None or school.status != "active":
+        raise HTTPException(status_code=404, detail="学校不存在")
+    _require_school_role(db, user, school_id, {"school_admin"})
+    approval = db.scalar(
+        select(PilotEnrollmentApproval).where(
+            PilotEnrollmentApproval.school_id == school_id,
+            PilotEnrollmentApproval.user_id == participant_id,
+        )
+    )
+    if approval is None:
+        raise HTTPException(status_code=404, detail="试点准入记录不存在")
+    approval.status = "revoked"
+    approval.revoked_at = datetime.now(timezone.utc)
+    membership = db.scalar(
+        select(SchoolMembership).where(
+            SchoolMembership.school_id == school_id,
+            SchoolMembership.user_id == participant_id,
+        )
+    )
+    if membership is not None:
+        membership.status = "left"
+    db.execute(
+        update(ClassMembership)
+        .where(
+            ClassMembership.user_id == participant_id,
+            ClassMembership.class_id.in_(
+                select(SchoolClass.id).where(SchoolClass.school_id == school_id)
+            ),
+        )
+        .values(status="left")
+    )
+    participant = db.get(User, participant_id)
+    if participant is not None and participant.tenant_id == school_id:
+        participant.tenant_id = None
+    db.add(
+        AuditLog(
+            actor_user_id=user.id,
+            action="pilot.enrollment_revoked",
+            target_type="pilot_enrollment_approval",
+            target_id=approval.id,
+            details={"school_id": school_id, "user_id": participant_id},
+        )
+    )
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.post("/schools/{school_id}/invites", response_model=OrganizationInviteResponse, status_code=201)
 def create_invite(
     school_id: str,
@@ -307,6 +516,15 @@ def redeem_invite(
     school = db.get(School, invite.school_id)
     if school is None or school.status != "active":
         raise HTTPException(status_code=404, detail="学校不可用")
+    if invite.member_role == "student" and settings.pilot_authorization_enforced:
+        approval = db.scalar(
+            select(PilotEnrollmentApproval).where(
+                PilotEnrollmentApproval.school_id == school.id,
+                PilotEnrollmentApproval.user_id == user.id,
+            )
+        )
+        if not _pilot_approval_is_valid(approval):
+            raise HTTPException(status_code=403, detail="尚未完成学校试点准入授权")
     if user.tenant_id is not None and user.tenant_id != school.id:
         raise HTTPException(status_code=409, detail="账户已属于其他学校")
     classroom = _classroom(db, invite.class_id) if invite.class_id else None
@@ -322,8 +540,10 @@ def redeem_invite(
         db.add(membership)
         joined = True
     else:
-        if ROLE_RANK[invite.member_role] > ROLE_RANK[membership.role]:
+        role_promoted = ROLE_RANK[invite.member_role] > ROLE_RANK[membership.role]
+        if role_promoted:
             membership.role = invite.member_role
+        if membership.status != "active" or role_promoted:
             membership.status = "active"
             joined = True
     if classroom is not None:
@@ -336,10 +556,13 @@ def redeem_invite(
         if class_membership is None:
             db.add(ClassMembership(class_id=classroom.id, user_id=user.id, role=invite.member_role))
             joined = True
-        elif ROLE_RANK[invite.member_role] > ROLE_RANK[class_membership.role]:
-            class_membership.role = invite.member_role
-            class_membership.status = "active"
-            joined = True
+        else:
+            role_promoted = ROLE_RANK[invite.member_role] > ROLE_RANK[class_membership.role]
+            if role_promoted:
+                class_membership.role = invite.member_role
+            if class_membership.status != "active" or role_promoted:
+                class_membership.status = "active"
+                joined = True
     if joined:
         invite.use_count += 1
         user.tenant_id = school.id
@@ -417,6 +640,74 @@ def class_overview(class_id: str, db: DbSession, user: CurrentUser) -> ClassOver
             ).all()
         )
     cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    top_error_categories: list[dict] = []
+    weak_knowledge_points: list[dict] = []
+    practice_completion_rate = 0.0
+    second_attempt_accuracy = 0.0
+    due_review_count = 0
+    if user_ids:
+        category_rows = db.execute(
+            select(MistakeProblem.error_category, func.count(MistakeProblem.id))
+            .where(
+                MistakeProblem.user_id.in_(user_ids),
+                MistakeProblem.error_category.is_not(None),
+            )
+            .group_by(MistakeProblem.error_category)
+            .order_by(func.count(MistakeProblem.id).desc())
+            .limit(5)
+        ).all()
+        top_error_categories = [
+            {"label": category, "count": count} for category, count in category_rows
+        ]
+        weak_rows = db.execute(
+            select(KnowledgeNode.name, func.count(MistakeProblem.id))
+            .join(MistakeProblem, MistakeProblem.knowledge_node_id == KnowledgeNode.id)
+            .where(
+                MistakeProblem.user_id.in_(user_ids),
+                MistakeProblem.study_status != "mastered",
+            )
+            .group_by(KnowledgeNode.name)
+            .order_by(func.count(MistakeProblem.id).desc())
+            .limit(5)
+        ).all()
+        weak_knowledge_points = [
+            {"label": name, "count": count} for name, count in weak_rows
+        ]
+        recent_rounds = list(
+            db.scalars(
+                select(MistakePracticeRound).where(
+                    MistakePracticeRound.user_id.in_(user_ids),
+                    MistakePracticeRound.started_at >= cutoff,
+                )
+            )
+        )
+        if recent_rounds:
+            practice_completion_rate = round(
+                sum(item.status == "completed" for item in recent_rounds) / len(recent_rounds),
+                4,
+            )
+        second_attempts = list(
+            db.scalars(
+                select(MistakeProblem.second_attempt_correct).where(
+                    MistakeProblem.user_id.in_(user_ids),
+                    MistakeProblem.second_attempt_correct.is_not(None),
+                    MistakeProblem.last_reviewed_at >= cutoff,
+                )
+            )
+        )
+        if second_attempts:
+            second_attempt_accuracy = round(
+                sum(value is True for value in second_attempts) / len(second_attempts),
+                4,
+            )
+        due_review_count = db.scalar(
+            select(func.count(MistakeProblem.id)).where(
+                MistakeProblem.user_id.in_(user_ids),
+                MistakeProblem.study_status != "mastered",
+                MistakeProblem.next_review_at.is_not(None),
+                MistakeProblem.next_review_at <= datetime.now(timezone.utc),
+            )
+        ) or 0
     students = [
         ClassStudentOverview(
             anonymous_id=_anonymous_student_id(class_id, membership.user_id),
@@ -437,5 +728,10 @@ def class_overview(class_id: str, db: DbSession, user: CurrentUser) -> ClassOver
         questions=sum(item.questions for item in students),
         mistakes=sum(item.mistakes for item in students),
         verified_nodes=sum(item.verified_nodes for item in students),
+        top_error_categories=top_error_categories,
+        weak_knowledge_points=weak_knowledge_points,
+        practice_completion_rate=practice_completion_rate,
+        second_attempt_accuracy=second_attempt_accuracy,
+        due_review_count=due_review_count,
         students=students,
     )

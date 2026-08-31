@@ -171,6 +171,30 @@ class ClassMembership(Base):
     joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class PilotEnrollmentApproval(Base):
+    __tablename__ = "pilot_enrollment_approvals"
+    __table_args__ = (
+        UniqueConstraint("school_id", "user_id", name="uq_pilot_enrollment_school_user"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    school_id: Mapped[str] = mapped_column(ForeignKey("schools.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="approved", index=True)
+    school_authorization_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
+    voluntary_participation_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
+    guardian_authorization_required: Mapped[bool] = mapped_column(Boolean, default=True)
+    guardian_authorization_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
+    approval_basis: Mapped[str] = mapped_column(String(500))
+    approved_by: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
 class OrganizationInvite(Base):
     __tablename__ = "organization_invites"
     __table_args__ = (

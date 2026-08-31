@@ -42,6 +42,7 @@
 - ACME 目录固定为 `/www/wwwroot/qingkui-api-acme`，续期钩子安装在 `/etc/letsencrypt/renewal-hooks/deploy/`。
 - 每次 Nginx 配置变更先执行 `nginx -t`；续期钩子也会先校验配置再重载。
 - 发布验收必须覆盖 HTTP 301、TLS 证书、`/health`、`/docs`、OpenAPI 和一条真实 SSE 问答。
+- `/health` 必须同时满足 `status=ok`、`release_config_ready=true`；试点/生产会检查隐私同意、首发内容范围、限流、模型、检索和私有 OSS 配置。
 
 ## 浏览器跨域
 
@@ -57,4 +58,5 @@
 - `/api/admin/model-costs` 支持 `start_at`、`end_at`、`feature`、`provider` 筛选，展示成功/失败调用、失败率、平均延迟、Token 和额度消耗。
 - 主动告警使用 `operational-alert-notify`，默认关闭；配置、负载边界和调度方式见 `docs/OPERATIONAL_ALERTS.md`。
 - 发布回归至少制造一次受控成功调用和一次模拟失败，确认失败调用不扣额度且后台统计可见。
+- 开启 `ORGANIZATIONS_ENABLED=true` 前必须先设置 `PILOT_AUTHORIZATION_ENFORCED=true`，并验证未批准学生不能消耗邀请码、撤销后立即退出学校和班级。
 - “已验证”必须符合 `docs/LEARNING_EVIDENCE.md`；发布回归应确认客户端伪造 `completed_check` 被拒绝，检查重复提交被拒绝。

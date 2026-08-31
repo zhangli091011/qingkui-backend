@@ -1,11 +1,21 @@
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import ClassMembership, OrganizationInvite, SchoolMembership, User, UserRole
+from app.models import (
+    ClassMembership,
+    MistakePracticeRound,
+    MistakeProblem,
+    OrganizationInvite,
+    PilotEnrollmentApproval,
+    SchoolMembership,
+    User,
+    UserRole,
+)
 
 
 def _register(client: TestClient, prefix: str) -> tuple[dict, dict[str, str]]:
@@ -125,6 +135,33 @@ def test_school_class_invites_and_anonymous_teacher_overview(client: TestClient,
         json={"event_type": "viewed_node", "node_id": "quadratic_function", "event_data": {}},
         headers=student_headers,
     ).status_code == 201
+    with SessionLocal() as db:
+        now = datetime.now(timezone.utc)
+        mistake = MistakeProblem(
+            user_id=student["user"]["id"],
+            subject="数学",
+            corrected_text="教师概览不得返回这道题的正文",
+            error_category="concept",
+            knowledge_node_id="quadratic_function",
+            next_review_at=now - timedelta(hours=1),
+            second_attempt_correct=True,
+            last_reviewed_at=now,
+        )
+        db.add(mistake)
+        db.flush()
+        db.add(
+            MistakePracticeRound(
+                mistake_id=mistake.id,
+                user_id=student["user"]["id"],
+                round_number=1,
+                review_stage="correction",
+                status="completed",
+                question_count=2,
+                correct_count=2,
+                completed_at=now,
+            )
+        )
+        db.commit()
 
     assert client.get(f"/api/organizations/classes/{class_id}/overview", headers=outsider_headers).status_code == 403
     overview = client.get(f"/api/organizations/classes/{class_id}/overview", headers=teacher_headers)
@@ -134,11 +171,17 @@ def test_school_class_invites_and_anonymous_teacher_overview(client: TestClient,
     assert values["student_count"] == 1
     assert values["active_7d_students"] == 1
     assert values["questions"] == 1
+    assert values["practice_completion_rate"] == 1.0
+    assert values["second_attempt_accuracy"] == 1.0
+    assert values["due_review_count"] == 1
+    assert values["top_error_categories"] == [{"label": "concept", "count": 1}]
+    assert values["weak_knowledge_points"][0]["label"] != "quadratic_function"
     assert values["students"][0]["anonymous_id"]
     assert "user_id" not in values["students"][0]
     assert student["user"]["username"] not in body
     assert "quadratic_function" not in body
     assert "解释二次函数" not in body
+    assert "教师概览不得返回这道题的正文" not in body
 
     memberships = client.get("/api/organizations/me", headers=student_headers)
     assert memberships.status_code == 200
@@ -200,3 +243,111 @@ def test_user_cannot_join_two_schools(client: TestClient, monkeypatch) -> None:
     with SessionLocal() as db:
         user = db.get(User, student["user"]["id"])
         assert user is not None and user.tenant_id is not None
+
+
+def test_student_invite_requires_revocable_pilot_approval(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "organizations_enabled", True)
+    monkeypatch.setattr(settings, "pilot_authorization_enforced", True)
+    admin, admin_headers = _register(client, "pilot_gate_admin")
+    student, student_headers = _register(client, "pilot_gate_student")
+    _, outsider_headers = _register(client, "pilot_gate_outsider")
+    _set_admin(admin["user"]["id"])
+
+    school = client.post(
+        "/api/organizations/schools",
+        json={"name": "青葵授权试点学校", "code": f"pilot-{uuid.uuid4().hex[:8]}"},
+        headers=admin_headers,
+    ).json()
+    invite_response = client.post(
+        f"/api/organizations/schools/{school['id']}/invites",
+        json={"member_role": "student", "max_uses": 3, "expires_hours": 24},
+        headers=admin_headers,
+    )
+    assert invite_response.status_code == 201
+    invite = invite_response.json()
+
+    blocked = client.post(
+        "/api/organizations/invites/redeem",
+        json={"code": invite["code"]},
+        headers=student_headers,
+    )
+    assert blocked.status_code == 403
+    with SessionLocal() as db:
+        stored = db.get(OrganizationInvite, invite["id"])
+        assert stored is not None and stored.use_count == 0
+
+    approval_body = {
+        "user_id": student["user"]["id"],
+        "school_authorization_confirmed": True,
+        "voluntary_participation_confirmed": True,
+        "guardian_authorization_required": True,
+        "guardian_authorization_confirmed": False,
+        "approval_basis": "校方审批单 QK-2026-001",
+    }
+    invalid = client.post(
+        f"/api/organizations/schools/{school['id']}/pilot-approvals",
+        json=approval_body,
+        headers=admin_headers,
+    )
+    assert invalid.status_code == 422
+    assert client.post(
+        f"/api/organizations/schools/{school['id']}/pilot-approvals",
+        json={**approval_body, "guardian_authorization_confirmed": True},
+        headers=outsider_headers,
+    ).status_code == 403
+
+    approved = client.post(
+        f"/api/organizations/schools/{school['id']}/pilot-approvals",
+        json={**approval_body, "guardian_authorization_confirmed": True},
+        headers=admin_headers,
+    )
+    assert approved.status_code == 200, approved.text
+    approval = approved.json()
+    assert approval["status"] == "approved"
+    assert "guardian_name" not in approval
+    assert "guardian_phone" not in approval
+    assert client.post(
+        "/api/organizations/invites/redeem",
+        json={"code": invite["code"]},
+        headers=student_headers,
+    ).status_code == 200
+
+    revoked = client.delete(
+        f"/api/organizations/schools/{school['id']}/pilot-approvals/{student['user']['id']}",
+        headers=admin_headers,
+    )
+    assert revoked.status_code == 204
+    assert client.post(
+        "/api/organizations/invites/redeem",
+        json={"code": invite["code"]},
+        headers=student_headers,
+    ).status_code == 403
+    with SessionLocal() as db:
+        stored_approval = db.scalar(
+            select(PilotEnrollmentApproval).where(
+                PilotEnrollmentApproval.school_id == school["id"],
+                PilotEnrollmentApproval.user_id == student["user"]["id"],
+            )
+        )
+        membership = db.scalar(
+            select(SchoolMembership).where(
+                SchoolMembership.school_id == school["id"],
+                SchoolMembership.user_id == student["user"]["id"],
+            )
+        )
+        assert stored_approval is not None and stored_approval.status == "revoked"
+        assert membership is not None and membership.status == "left"
+
+    reapproved = client.post(
+        f"/api/organizations/schools/{school['id']}/pilot-approvals",
+        json={**approval_body, "guardian_authorization_confirmed": True},
+        headers=admin_headers,
+    )
+    assert reapproved.status_code == 200
+    rejoined = client.post(
+        "/api/organizations/invites/redeem",
+        json={"code": invite["code"]},
+        headers=student_headers,
+    )
+    assert rejoined.status_code == 200
+    assert rejoined.json()["joined"] is True
