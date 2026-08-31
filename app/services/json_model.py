@@ -54,6 +54,9 @@ def request_json(
         "temperature": 0,
         "max_tokens": min(max_tokens, settings.deepseek_max_tokens),
         "response_format": {"type": "json_object"},
+        # v4-flash may otherwise spend the entire budget in reasoning_content
+        # and return an empty final content field.
+        "thinking": {"type": "disabled"},
     }
     last_error: Exception | None = None
     for attempt in range(3):
