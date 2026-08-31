@@ -86,7 +86,7 @@ def _issue_tokens(db: DbSession, user: User, device_name: str | None) -> AuthRes
 
 @router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
 def register(payload: RegisterRequest, db: DbSession) -> AuthResponse:
-    if settings.app_env in {"pilot", "production"} and (
+    if settings.privacy_consent_enforced and (
         not payload.privacy_consent or payload.privacy_notice_version != settings.privacy_notice_version
     ):
         raise HTTPException(

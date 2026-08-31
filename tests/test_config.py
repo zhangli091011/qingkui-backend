@@ -12,6 +12,7 @@ def test_pilot_is_a_supported_environment() -> None:
     )
 
     assert settings.app_env == "pilot"
+    assert settings.privacy_consent_enforced is False
 
 
 @pytest.mark.parametrize("app_env", ["pilot", "production"])

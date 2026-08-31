@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["*"]
     password_reset_minutes: int = 30
     privacy_notice_version: str = "2026-08-31"
+    privacy_consent_enforced: bool = False
     email_provider: Literal["disabled", "smtp", "console"] = "disabled"
     smtp_host: str | None = None
     smtp_port: int = 587

@@ -19,6 +19,7 @@
 ## 兼容与升级
 
 - 数据库先做可恢复备份，再执行向后兼容迁移；旧 APK 至少保留一个发布周期的 API 兼容。
+- 新隐私版本发布时先保持 `PRIVACY_CONSENT_ENFORCED=false`，由新版客户端主动引导同意；确认旧 APK 已完成升级后，再设置为 `true` 并重建 API 容器。
 - 服务端部署采用“新镜像健康检查通过后切流”，不得在原容器内手工改代码。
 - 向量索引按 SHA-256 版本化，本地只读挂载；OSS 保存当前和上一个可用版本。
 - 发布前必须执行 `verify-oss-storage` 和严格模式 `sync-vector-index-from-oss`；具体流程见 `docs/OSS_STORAGE.md`。

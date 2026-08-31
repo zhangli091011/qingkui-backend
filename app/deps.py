@@ -36,7 +36,7 @@ AuthenticatedUser = Annotated[User, Depends(get_authenticated_user)]
 
 
 def get_current_user(db: DbSession, user: AuthenticatedUser) -> User:
-    if settings.app_env not in {"pilot", "production"} or user.role != UserRole.student:
+    if not settings.privacy_consent_enforced or user.role != UserRole.student:
         return user
     accepted = db.scalar(
         select(UserPrivacyConsent.id).where(
