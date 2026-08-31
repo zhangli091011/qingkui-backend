@@ -11,12 +11,16 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models import (
     Conversation,
+    AuditLog,
     CreditLedger,
     FeedbackSubmission,
     LearningEvent,
     Message,
     MistakePractice,
+    MistakePracticeRound,
     MistakeProblem,
+    MistakeAsset,
+    OcrTask,
     User,
     UserKnowledgeState,
     KnowledgeStatus,
@@ -95,6 +99,14 @@ def build_pilot_report(
             "unhelpful_votes": 0,
             "mistake_count": 0,
             "completed_practice_count": 0,
+            "mistake_upload_attempts": 0,
+            "mistake_upload_successes": 0,
+            "ocr_completed_count": 0,
+            "ocr_corrected_count": 0,
+            "practice_round_count": 0,
+            "completed_practice_round_count": 0,
+            "second_attempt_count": 0,
+            "second_attempt_correct_count": 0,
         }
         for user in users
     }
@@ -172,6 +184,49 @@ def build_pilot_report(
             )
         ):
             rows[practice.user_id]["completed_practice_count"] += 1
+        for audit in db.scalars(
+            select(AuditLog).where(
+                AuditLog.actor_user_id.in_(user_ids),
+                AuditLog.created_at >= start,
+                AuditLog.created_at < end,
+                AuditLog.action.in_(("mistake.image_upload_attempted", "mistake.image_upload_succeeded", "mistake.ocr_confirmed")),
+            )
+        ):
+            if audit.action == "mistake.image_upload_attempted":
+                rows[audit.actor_user_id]["mistake_upload_attempts"] += 1
+            elif audit.action == "mistake.image_upload_succeeded":
+                rows[audit.actor_user_id]["mistake_upload_successes"] += 1
+            elif audit.action == "mistake.ocr_confirmed":
+                rows[audit.actor_user_id]["ocr_corrected_count"] += 1
+        for task in db.scalars(
+            select(OcrTask).where(
+                OcrTask.user_id.in_(user_ids),
+                OcrTask.status == "succeeded",
+                OcrTask.completed_at >= start,
+                OcrTask.completed_at < end,
+            )
+        ):
+            rows[task.user_id]["ocr_completed_count"] += 1
+        for practice_round in db.scalars(
+            select(MistakePracticeRound).where(
+                MistakePracticeRound.user_id.in_(user_ids),
+                MistakePracticeRound.started_at >= start,
+                MistakePracticeRound.started_at < end,
+            )
+        ):
+            rows[practice_round.user_id]["practice_round_count"] += 1
+            if practice_round.status == "completed":
+                rows[practice_round.user_id]["completed_practice_round_count"] += 1
+        for mistake in db.scalars(
+            select(MistakeProblem).where(
+                MistakeProblem.user_id.in_(user_ids),
+                MistakeProblem.last_reviewed_at >= start,
+                MistakeProblem.last_reviewed_at < end,
+                MistakeProblem.second_attempt_correct.is_not(None),
+            )
+        ):
+            rows[mistake.user_id]["second_attempt_count"] += 1
+            rows[mistake.user_id]["second_attempt_correct_count"] += int(mistake.second_attempt_correct is True)
         for state in db.scalars(
             select(UserKnowledgeState).where(
                 UserKnowledgeState.user_id.in_(user_ids),
@@ -200,6 +255,18 @@ def build_pilot_report(
     state_changes = sum(row["knowledge_state_change_count"] for row in rows.values())
     credits_spent = sum(row["credits_spent"] for row in rows.values())
     registered = len(users)
+    upload_attempts = sum(row["mistake_upload_attempts"] for row in rows.values())
+    upload_successes = sum(row["mistake_upload_successes"] for row in rows.values())
+    ocr_completed = sum(row["ocr_completed_count"] for row in rows.values())
+    ocr_corrected = sum(row["ocr_corrected_count"] for row in rows.values())
+    practice_rounds = sum(row["practice_round_count"] for row in rows.values())
+    completed_rounds = sum(row["completed_practice_round_count"] for row in rows.values())
+    second_attempts = sum(row["second_attempt_count"] for row in rows.values())
+    second_correct = sum(row["second_attempt_correct_count"] for row in rows.values())
+
+    def rate(numerator: int, denominator: int) -> float:
+        return round(numerator / denominator, 4) if denominator else 0.0
+
     metrics = {
         "start_at": start,
         "end_at": end,
@@ -217,5 +284,17 @@ def build_pilot_report(
         "knowledge_state_changes": state_changes,
         "credits_spent": credits_spent,
         "average_credits_per_active_user": round(credits_spent / activated, 2) if activated else 0,
+        "mistake_upload_attempts": upload_attempts,
+        "mistake_upload_successes": upload_successes,
+        "mistake_upload_success_rate": rate(upload_successes, upload_attempts),
+        "ocr_completed_count": ocr_completed,
+        "ocr_corrected_count": ocr_corrected,
+        "ocr_correction_rate": rate(ocr_corrected, ocr_completed),
+        "practice_round_count": practice_rounds,
+        "completed_practice_round_count": completed_rounds,
+        "practice_completion_rate": rate(completed_rounds, practice_rounds),
+        "second_attempt_count": second_attempts,
+        "second_attempt_correct_count": second_correct,
+        "second_attempt_accuracy": rate(second_correct, second_attempts),
     }
     return metrics, list(rows.values())

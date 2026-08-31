@@ -739,6 +739,18 @@ class PilotMetricsResponse(BaseModel):
     knowledge_state_changes: int
     credits_spent: int
     average_credits_per_active_user: float
+    mistake_upload_attempts: int
+    mistake_upload_successes: int
+    mistake_upload_success_rate: float
+    ocr_completed_count: int
+    ocr_corrected_count: int
+    ocr_correction_rate: float
+    practice_round_count: int
+    completed_practice_round_count: int
+    practice_completion_rate: float
+    second_attempt_count: int
+    second_attempt_correct_count: int
+    second_attempt_accuracy: float
 
 
 class PilotUserExport(BaseModel):
@@ -756,6 +768,14 @@ class PilotUserExport(BaseModel):
     unhelpful_votes: int
     mistake_count: int
     completed_practice_count: int
+    mistake_upload_attempts: int
+    mistake_upload_successes: int
+    ocr_completed_count: int
+    ocr_corrected_count: int
+    practice_round_count: int
+    completed_practice_round_count: int
+    second_attempt_count: int
+    second_attempt_correct_count: int
 
 
 class PilotExportResponse(BaseModel):

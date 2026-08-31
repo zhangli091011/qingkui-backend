@@ -293,6 +293,15 @@ async def upload_image(
     image: UploadFile = File(...),
 ) -> OcrTask:
     mistake = _owned_mistake(db, mistake_id, user.id)
+    db.add(
+        AuditLog(
+            actor_user_id=user.id,
+            action="mistake.image_upload_attempted",
+            target_type="mistake",
+            target_id=mistake.id,
+            details={"filename": image.filename, "content_type": image.content_type},
+        )
+    )
     payload = await image.read(settings.user_upload_max_bytes + 1)
     asset_id = new_id()
     try:
@@ -300,8 +309,10 @@ async def upload_image(
             user_id=user.id, mistake_id=mistake.id, asset_id=asset_id, payload=payload
         )
     except ValueError as exc:
+        db.commit()
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
+        db.commit()
         raise HTTPException(status_code=503, detail="图片存储暂时不可用") from exc
     asset = MistakeAsset(
         id=asset_id,
@@ -323,6 +334,15 @@ async def upload_image(
         queued_at=datetime.now(timezone.utc),
     )
     db.add_all((asset, task))
+    db.add(
+        AuditLog(
+            actor_user_id=user.id,
+            action="mistake.image_upload_succeeded",
+            target_type="mistake_asset",
+            target_id=asset.id,
+            details={"size_bytes": asset.size_bytes, "mime_type": asset.mime_type},
+        )
+    )
     db.commit()
     db.refresh(task)
     try:
