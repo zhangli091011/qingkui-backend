@@ -44,6 +44,38 @@ python -m app.cli content-review-packet `
   --markdown .local/math-review-packet.md
 ```
 
+审核人员必须逐项核对原文证据，修订 `node.definition / explanation / common_errors / question_types`，并把 `review` 填为：
+
+```json
+{
+  "status": "completed",
+  "reviewer": "content_admin_username",
+  "reviewed_at": "2026-08-31T15:00:00+00:00",
+  "decision": "approved",
+  "notes": "已按人教 A 版教材逐条核对"
+}
+```
+
+先只读演练回写；该命令会验证审核人权限、节点版本、范围、来源授权和发布阻断项：
+
+```powershell
+python -m app.cli content-review-apply `
+  --input .local/math-review-packet.json `
+  --reviewer content_admin_username `
+  --publish `
+  --dry-run
+```
+
+确认演练结果后才允许正式回写。发布模式不会绕过发布门；有阻断项的节点保留为未激活草稿：
+
+```powershell
+python -m app.cli content-review-apply `
+  --input .local/math-review-packet.json `
+  --reviewer content_admin_username `
+  --publish `
+  --confirmation PUBLISH_REVIEWED_CONTENT
+```
+
 审核包为每个草稿节点提供来源、原文分块、当前阻断原因、同文档待审公式，以及从带“易错、注意、题型、例题”等标记的原文行中提取的建议。每条建议都保留 `chunk_id` 和原文证据。
 
-该命令不修改数据库，不移除“待审核”标记，也不发布节点。建议可能不完整或与节点边界不完全一致；审核员必须对照原文确认后，通过管理后台保存定义、解释、常见错误和典型题型，再单独执行发布。禁止写脚本把审核包建议直接批量写回正式字段。
+`content-review-packet` 只生成审核材料，不修改数据库。建议可能不完整或与节点边界不完全一致；审核员必须对照原文确认后填写节点字段和 `review` 结论。只有 `content-review-apply` 会在权限、版本、范围和发布门全部校验后写回；禁止使用其他脚本绕过该命令，把启发式建议直接批量写入或发布。

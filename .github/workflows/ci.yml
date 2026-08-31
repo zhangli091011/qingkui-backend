@@ -26,10 +26,14 @@ jobs:
           cache: pip
       - name: Install
         run: python -m pip install -e ".[dev]"
+      - name: Compile source
+        run: python -m compileall -q app
       - name: Test
         run: pytest
       - name: Upgrade empty database
         run: alembic upgrade head
+      - name: Verify models match migrations
+        run: alembic check
       - name: Verify downgrade path
         run: alembic downgrade base
       - name: Verify second upgrade

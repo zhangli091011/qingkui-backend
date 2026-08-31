@@ -258,6 +258,37 @@ def content_review_packet_file(
     )
 
 
+def apply_content_review_packet_file(
+    input_path: str,
+    reviewer_username: str,
+    *,
+    publish: bool,
+    dry_run: bool,
+    confirmation: str | None,
+) -> None:
+    from sqlalchemy import select
+
+    from app.models import User, UserRole
+    from app.services.review_packets import apply_content_review_packet
+
+    expected_confirmation = "PUBLISH_REVIEWED_CONTENT" if publish else "APPLY_REVIEWED_CONTENT"
+    if not dry_run and confirmation != expected_confirmation:
+        raise SystemExit(f"--confirmation must be {expected_confirmation}")
+    path = Path(input_path).resolve()
+    packet = json.loads(path.read_text(encoding="utf-8"))
+    Base.metadata.create_all(bind=engine)
+    with SessionLocal() as db:
+        reviewer = db.scalar(select(User).where(User.username == reviewer_username.lower()))
+        if reviewer is None or not reviewer.is_active or reviewer.role not in (UserRole.admin, UserRole.content_admin):
+            raise SystemExit("--reviewer must name an active admin or content_admin account")
+        summary = apply_content_review_packet(db, packet, reviewer=reviewer, publish=publish)
+        if dry_run:
+            db.rollback()
+        else:
+            db.commit()
+    print(json.dumps({"dry_run": dry_run, "publish": publish, **summary.as_dict()}, ensure_ascii=False, indent=2))
+
+
 def import_wikibooks_content(pages_per_topic: int) -> None:
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
@@ -358,6 +389,15 @@ def main() -> None:
     review_packet_command.add_argument("--textbook-version", default="人教A版")
     review_packet_command.add_argument("--chapter")
     review_packet_command.add_argument("--limit", type=int, default=600)
+    review_apply_command = subparsers.add_parser(
+        "content-review-apply",
+        help="apply a completed human review packet with optimistic version checks",
+    )
+    review_apply_command.add_argument("--input", required=True)
+    review_apply_command.add_argument("--reviewer", required=True)
+    review_apply_command.add_argument("--publish", action="store_true")
+    review_apply_command.add_argument("--dry-run", action="store_true")
+    review_apply_command.add_argument("--confirmation")
     wikibooks_command = subparsers.add_parser("import-wikibooks")
     wikibooks_command.add_argument("--pages-per-topic", type=int, default=6, choices=range(1, 11))
     alert_command = subparsers.add_parser(
@@ -438,6 +478,14 @@ def main() -> None:
             textbook_version=args.textbook_version,
             chapter=args.chapter,
             limit=args.limit,
+        )
+    elif args.command == "content-review-apply":
+        apply_content_review_packet_file(
+            args.input,
+            args.reviewer,
+            publish=args.publish,
+            dry_run=args.dry_run,
+            confirmation=args.confirmation,
         )
     elif args.command == "import-wikibooks":
         import_wikibooks_content(args.pages_per_topic)
