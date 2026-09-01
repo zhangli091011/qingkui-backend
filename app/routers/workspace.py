@@ -22,6 +22,7 @@ from app.models import (
     CreditLedger,
     FeedbackSubmission,
     KnowledgeDocument,
+    KnowledgeEdge,
     KnowledgeNode,
     LearningEvent,
     ModelCall,
@@ -290,7 +291,15 @@ def _content_metrics(db: DbSession, user: User) -> dict[str, Any]:
     approved_nodes = int(
         db.scalar(select(func.count(KnowledgeNode.id)).where(KnowledgeNode.review_status == "approved", KnowledgeNode.is_active.is_(True))) or 0
     )
-    return {"pending_content": pending_content, "pending_formulas": pending_formulas, "approved_nodes": approved_nodes}
+    return {
+        "pending_content": pending_content,
+        "pending_formulas": pending_formulas,
+        "approved_nodes": approved_nodes,
+        "documents": int(db.scalar(select(func.count(KnowledgeDocument.id))) or 0),
+        "knowledge_edges": int(db.scalar(select(func.count(KnowledgeEdge.id))) or 0),
+        "pending_feedback": int(db.scalar(select(func.count(FeedbackSubmission.id)).where(FeedbackSubmission.status == "pending")) or 0),
+        "audit_events": int(db.scalar(select(func.count(AuditLog.id))) or 0),
+    }
 
 
 def _dashboard(
@@ -311,6 +320,8 @@ def _dashboard(
     metrics = _metric_payload(db, user_ids, start, end)
     alerts = build_operational_alert_summary(db, now=end)
     governance = _content_metrics(db, user)
+    if user.role == UserRole.admin:
+        governance["release_gate_passed"] = bool(build_release_readiness_report(db).get("release_gate_passed", False))
     if grade or subject or textbook_version:
         # These dimensions are currently content filters. Learning events retain
         # no subject column, so do not claim a false filtered student metric.
