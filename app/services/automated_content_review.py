@@ -26,6 +26,7 @@ PROMPT_VERSION = "launch-content-auto-review-v1"
 @dataclass
 class AutoReviewSummary:
     considered: int = 0
+    skipped_previously_applied: int = 0
     generated: int = 0
     auto_applied: int = 0
     manual_review: int = 0
@@ -236,6 +237,22 @@ def auto_review_launch_content(
     )
     items = packet["items"]
     summary = AutoReviewSummary(considered=len(items))
+    node_ids = [item["node"]["id"] for item in items]
+    previously_applied = {
+        (version.node_id, version.version)
+        for version in db.scalars(
+            select(KnowledgeNodeVersion).where(KnowledgeNodeVersion.node_id.in_(node_ids))
+        )
+        if isinstance(version.snapshot, dict)
+        and version.snapshot.get("prompt_version") == PROMPT_VERSION
+        and version.snapshot.get("automated_review_id")
+    } if node_ids else set()
+    items = [
+        item
+        for item in items
+        if (item["node"]["id"], item["node"]["version"]) not in previously_applied
+    ]
+    summary.skipped_previously_applied = len(packet["items"]) - len(items)
     results: list[dict[str, Any]] = []
     workers = max(1, min(int(workers), 8, len(items) or 1))
 

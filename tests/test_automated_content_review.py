@@ -109,3 +109,17 @@ def test_auto_review_improves_only_inactive_draft_and_keeps_human_gate(client) -
         assert version.snapshot["review_status"] == "draft"
         assert version.snapshot["is_active"] is False
         assert audit is not None and audit.details["published"] is False
+
+        repeated, repeated_results = auto_review_launch_content(
+            db,
+            subject="数学",
+            grade="高一",
+            textbook_version="人教A版",
+            chapter=chapter,
+            workers=1,
+            apply_drafts=True,
+        )
+        assert repeated.skipped_previously_applied == 1
+        assert repeated.auto_applied == 0
+        assert repeated_results == []
+        assert node.version == 2
