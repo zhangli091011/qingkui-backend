@@ -269,6 +269,10 @@ class KnowledgeNodeDetail(KnowledgeNodeSummary):
 class NeighborNode(KnowledgeNodeSummary):
     edge_type: EdgeType
     edge_explanation: str
+    # True when the centre node is the source of this edge. Consumers can use
+    # this to distinguish descendants from prerequisites while retaining the
+    # complete neighbour list for discovery.
+    edge_outgoing: bool = True
 
 
 class NeighborResponse(BaseModel):

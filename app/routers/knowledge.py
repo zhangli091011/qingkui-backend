@@ -201,7 +201,14 @@ def neighbors(
                 "is_favorite": states[node.id].is_favorite if node.id in states else False,
             }
         ).model_dump()
-        items.append(NeighborNode(**values, edge_type=edge.edge_type, edge_explanation=edge.explanation))
+        items.append(
+            NeighborNode(
+                **values,
+                edge_type=edge.edge_type,
+                edge_explanation=edge.explanation,
+                edge_outgoing=edge.source_node_id == node_id,
+            )
+        )
     center_summary = KnowledgeNodeSummary.model_validate(center).model_copy(
         update={
             "status": states[center.id].status if center.id in states else KnowledgeStatus.unexplored,
