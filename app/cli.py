@@ -18,7 +18,7 @@ from app.services.documents import (
 )
 from app.services.wikibooks import import_wikibooks
 from app.services.knowledge import build_vector_index
-from app.services.metadata import backfill_document_metadata, extract_graph_relations
+from app.services.metadata import backfill_document_metadata, extract_graph_relations, refresh_template_node_summaries
 from app.services.object_storage import migrate_knowledge_to_oss, sync_vector_index_from_oss, verify_knowledge_oss
 from app.services.content_governance import governance_report
 from app.services.launch_candidates import materialize_launch_candidates
@@ -188,6 +188,17 @@ def extract_graph_file(limit: int | None = None) -> None:
         f"Graph extraction: documents={summary.documents}, nodes_created={summary.nodes_created}, "
         f"candidates={summary.candidates}, edges_created={summary.edges_created}"
     )
+
+
+def refresh_node_summaries_file(actor: str | None = None) -> None:
+    """Refresh legacy node summaries from imported source chunks."""
+    Base.metadata.create_all(bind=engine)
+    with SessionLocal() as db:
+        actor_id = actor
+        if actor and len(actor) < 40:
+            actor_id = db.scalar(select(User.id).where(User.username == actor.lower())) or actor
+        changed = refresh_template_node_summaries(db, actor_user_id=actor_id, only_placeholders=True)
+    print(f"Node summaries refreshed: {changed}")
 
 
 def content_governance_report_file(output: str | None = None) -> None:
@@ -488,6 +499,8 @@ def main() -> None:
     metadata_command.add_argument("--dry-run", action="store_true")
     graph_command = subparsers.add_parser("extract-knowledge-graph", help="extract conservative graph relation candidates")
     graph_command.add_argument("--limit", type=int)
+    summary_command = subparsers.add_parser("refresh-node-summaries", help="replace legacy placeholders with source-backed summaries")
+    summary_command.add_argument("--actor", default="zhangli", help="username recorded in node versions and audit logs")
     governance_command = subparsers.add_parser("content-governance-report", help="audit launch-scope content before publication")
     governance_command.add_argument("--output")
     candidate_command = subparsers.add_parser("materialize-launch-candidates", help="create review-only nodes from launch-scope documents")
@@ -626,6 +639,8 @@ def main() -> None:
         backfill_metadata_file(args.limit, dry_run=args.dry_run)
     elif args.command == "extract-knowledge-graph":
         extract_graph_file(args.limit)
+    elif args.command == "refresh-node-summaries":
+        refresh_node_summaries_file(args.actor)
     elif args.command == "content-governance-report":
         content_governance_report_file(args.output)
     elif args.command == "materialize-launch-candidates":
