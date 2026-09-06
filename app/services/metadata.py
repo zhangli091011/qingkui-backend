@@ -541,32 +541,28 @@ def refresh_template_node_summaries(
     old placeholder markers. Each changed node receives a version and audit log.
     """
     nodes = list(db.scalars(select(KnowledgeNode).where(KnowledgeNode.is_active.is_(True))))
+    docs_by_id = {doc.id: doc for doc in db.scalars(select(KnowledgeDocument))}
+    subject_chunks: dict[str, list[tuple[str, str, int, str, str]]] = {}
+    for chunk in db.scalars(select(KnowledgeChunk).order_by(KnowledgeChunk.document_id, KnowledgeChunk.sequence)):
+        document = docs_by_id.get(chunk.document_id)
+        if document is None or not document.subject:
+            continue
+        content = chunk.content or ""
+        subject_chunks.setdefault(document.subject, []).append(
+            (document.id, document.title, chunk.sequence, content, content.lower())
+        )
     changed = 0
     for node in nodes:
         legacy = _SUMMARY_PLACEHOLDER_RE.search(f"{node.definition}\n{node.explanation}")
         if only_placeholders and not legacy:
             continue
-        # Load chunks once; the corpus is large enough that issuing a query per
-        # node would make a refresh unnecessarily slow.
-        if not hasattr(refresh_template_node_summaries, "_chunk_cache"):
-            all_docs = list(db.scalars(select(KnowledgeDocument)))
-            docs_by_id = {doc.id: doc for doc in all_docs}
-            chunks_by_doc: dict[str, list[KnowledgeChunk]] = {}
-            for chunk in db.scalars(select(KnowledgeChunk).order_by(KnowledgeChunk.document_id, KnowledgeChunk.sequence)):
-                chunks_by_doc.setdefault(chunk.document_id, []).append(chunk)
-            refresh_template_node_summaries._chunk_cache = (docs_by_id, chunks_by_doc)  # type: ignore[attr-defined]
-        docs_by_id, chunks_by_doc = refresh_template_node_summaries._chunk_cache  # type: ignore[attr-defined]
         evidence: list[tuple[str, int, str]] = []
         document_ids: set[str] = set()
         needle = node.name.lower()
-        for document_id, chunks in chunks_by_doc.items():
-            document = docs_by_id.get(document_id)
-            if document is None or document.subject != node.subject:
-                continue
-            matching = [chunk for chunk in chunks if needle in (chunk.content or "").lower()]
-            if matching:
-                document_ids.add(document.id)
-                evidence.extend((document.title, chunk.sequence, chunk.content) for chunk in matching)
+        for document_id, title, sequence, content, lowered in subject_chunks.get(node.subject, []):
+            if needle in lowered:
+                document_ids.add(document_id)
+                evidence.append((title, sequence, content))
         definition, explanation, source_excerpt, errors, questions = _build_node_summary(
             subject=node.subject,
             grade=node.grade,
