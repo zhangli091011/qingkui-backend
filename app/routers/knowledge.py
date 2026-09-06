@@ -172,6 +172,7 @@ def neighbors(
     db: DbSession,
     user: CurrentUser,
     limit: int = Query(default=30, ge=1, le=100),
+    direction: str = Query(default="all", pattern="^(all|outgoing|incoming)$"),
 ) -> NeighborResponse:
     center = db.get(KnowledgeNode, node_id)
     if center is None or not center.is_active or center.review_status != "approved":
@@ -180,11 +181,16 @@ def neighbors(
         (KnowledgeEdge.source_node_id == node_id, KnowledgeEdge.target_node_id),
         else_=KnowledgeEdge.source_node_id,
     )
+    edge_filter = {
+        "all": or_(KnowledgeEdge.source_node_id == node_id, KnowledgeEdge.target_node_id == node_id),
+        "outgoing": KnowledgeEdge.source_node_id == node_id,
+        "incoming": KnowledgeEdge.target_node_id == node_id,
+    }[direction]
     rows = db.execute(
         select(KnowledgeEdge, KnowledgeNode)
         .join(KnowledgeNode, KnowledgeNode.id == other_node_id)
         .where(
-            or_(KnowledgeEdge.source_node_id == node_id, KnowledgeEdge.target_node_id == node_id),
+            edge_filter,
             KnowledgeNode.is_active.is_(True),
             KnowledgeNode.review_status == "approved",
         )

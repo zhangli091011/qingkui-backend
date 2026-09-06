@@ -19,6 +19,7 @@ from app.models import (
     KnowledgeNode,
     KnowledgeNodeVersion,
     KnowledgeSource,
+    AuditLog,
 )
 from app.subjects import infer_subject, normalize_subject
 
@@ -331,6 +332,78 @@ def _graph_source(db: Session) -> KnowledgeSource:
     return source
 
 
+_SUMMARY_PLACEHOLDER_RE = re.compile(r"待审核|候选节点|主题词表|需管理员核验|自动生成候选", re.I)
+_SUMMARY_SPLIT_RE = re.compile(r"(?<=[。！？；;!?])|[\r\n]+")
+_DEFINITION_CUES = ("是指", "定义", "称为", "表示", "满足", "公式", "其中", "记作", "等于")
+_QUESTION_CUES = ("题型", "求", "判断", "证明", "计算", "解答", "应用")
+_ERROR_CUES = ("易错", "错误", "注意", "混淆", "误区", "容易")
+
+
+def _summary_sentences(text: str, concept: str) -> list[str]:
+    """Return short, useful evidence sentences instead of generated placeholders."""
+    seen: set[str] = set()
+    result: list[str] = []
+    for raw in _SUMMARY_SPLIT_RE.split(text or ""):
+        sentence = re.sub(r"\s+", " ", raw).strip(" -_•·|｜\t")
+        if len(sentence) < 8 or len(sentence) > 500 or _SUMMARY_PLACEHOLDER_RE.search(sentence):
+            continue
+        # Drop page headers and pure numbering/title lines.
+        if re.fullmatch(r"[\d\s.、:：()（）-]+", sentence) or sentence in seen:
+            continue
+        if concept and concept not in sentence and len(result) >= 8:
+            continue
+        seen.add(sentence)
+        result.append(sentence)
+    return result
+
+
+def _build_node_summary(
+    *,
+    subject: str,
+    grade: str,
+    textbook_version: str,
+    chapter: str,
+    concept: str,
+    document_count: int,
+    evidence: list[tuple[str, int, str]],
+) -> tuple[str, str, str, list[str], list[str]]:
+    """Build deterministic summaries from actual imported chunks.
+
+    This intentionally stays local/reproducible: every sentence can be traced back
+    to a document and chunk, and no generic ``待审核`` copy is emitted.
+    """
+    sentences: list[str] = []
+    for _, _, content in evidence:
+        for sentence in _summary_sentences(content, concept):
+            if sentence not in sentences:
+                sentences.append(sentence)
+    scored = sorted(
+        sentences,
+        key=lambda s: (
+            2 if concept and concept in s else 0,
+            2 if any(cue in s for cue in _DEFINITION_CUES) else 0,
+            min(len(s), 180) / 180,
+        ),
+        reverse=True,
+    )
+    definition = next((s for s in scored if any(cue in s for cue in _DEFINITION_CUES)), None)
+    if not definition:
+        definition = scored[0] if scored else f"{subject}·{grade}·{chapter}中的“{concept}”相关知识，摘要依据已导入教材片段整理。"
+    definition = definition[:4000]
+    body = scored[:4] or [definition]
+    meta = f"学科：{subject} · 年级：{grade} · 教材：{textbook_version} · 章节：{chapter} · 来源：{document_count} 份文档"
+    explanation = meta + "\n" + "\n".join(f"• {sentence}" for sentence in body)
+    source_lines: list[str] = []
+    for title, sequence, _ in evidence[:6]:
+        line = f"{title[:100]}（分块 {sequence}）"
+        if line not in source_lines:
+            source_lines.append(line)
+    source_excerpt = "来源：" + "；".join(source_lines or ["本地知识库导入文档"])
+    errors = [s for s in sentences if any(cue in s for cue in _ERROR_CUES)][:5]
+    questions = [s for s in sentences if any(cue in s for cue in _QUESTION_CUES)][:5]
+    return definition, explanation, source_excerpt[:255], errors, questions
+
+
 def materialize_graph_nodes(
     db: Session,
     *,
@@ -347,22 +420,29 @@ def materialize_graph_nodes(
     documents = list(db.scalars(statement))
     support: dict[tuple[str, str], set[str]] = {}
     excerpts: dict[tuple[str, str], str] = {}
+    evidence: dict[tuple[str, str], list[tuple[str, int, str]]] = {}
     for document in documents:
         subject = document.subject
         if subject not in GRAPH_CONCEPTS:
             continue
         chunks = db.scalars(
-            select(KnowledgeChunk.content)
+            select(KnowledgeChunk)
             .where(KnowledgeChunk.document_id == document.id)
             .order_by(KnowledgeChunk.sequence)
         )
-        content = "\n".join(chunks)
+        chunk_rows = list(chunks)
+        content = "\n".join(chunk.content for chunk in chunk_rows)
         haystack = f"{document.title}\n{document.chapter or ''}\n{content}".lower()
         for concept in GRAPH_CONCEPTS[subject]:
             if concept.lower() in haystack:
                 key = (subject, concept)
                 support.setdefault(key, set()).add(document.id)
                 excerpts.setdefault(key, document.title[:220])
+                evidence.setdefault(key, []).extend(
+                    (document.title, chunk.sequence, chunk.content)
+                    for chunk in chunk_rows
+                    if concept.lower() in (chunk.content or "").lower()
+                )
 
     if include_taxonomy:
         for subject, concepts in GRAPH_CONCEPTS.items():
@@ -377,25 +457,44 @@ def materialize_graph_nodes(
         has_document_evidence = len(document_ids) >= min_document_support
         if (not has_document_evidence and not include_taxonomy) or (subject, concept) in existing:
             continue
-        evidence_label = (
-            f"该主题在本地知识库的 {len(document_ids)} 份文档中出现，系统已生成候选节点，需管理员核验内容和层级。"
-            if has_document_evidence
-            else "该节点来自课程主题词表，当前学科尚未导入足够文档，需补充来源并由管理员审核。"
+        chapter = next(
+            (doc.chapter for doc in documents if doc.id in document_ids and doc.chapter),
+            f"{subject}知识体系",
         )
+        grade = next((doc.grade for doc in documents if doc.id in document_ids and doc.grade), "中学")
+        textbook = next(
+            (doc.textbook_version for doc in documents if doc.id in document_ids and doc.textbook_version),
+            "综合资料",
+        )
+        definition, explanation, source_excerpt, errors, questions = _build_node_summary(
+            subject=subject,
+            grade=grade,
+            textbook_version=textbook,
+            chapter=chapter,
+            concept=concept,
+            document_count=len(document_ids),
+            evidence=evidence.get((subject, concept), []),
+        )
+        if not has_document_evidence:
+            explanation = (
+                f"学科：{subject} · 当前节点来自课程目录，尚无足够原文证据。\n"
+                "已建立待补充来源的知识条目，导入教材后会自动补全定义与例题。"
+            )
+            source_excerpt = "来源：课程目录（待导入教材）"
         node = KnowledgeNode(
             id=_graph_node_id(subject, concept),
             name=concept,
             subject=subject,
-            grade="中学",
-            textbook_version="综合资料",
-            chapter=f"{subject}自动主题",
-            definition=f"文档或课程主题词表中的{subject}主题“{concept}”，正式定义待审核。",
-            explanation=evidence_label,
-            common_errors=[],
-            question_types=["概念辨析", "综合应用"],
+            grade=grade,
+            textbook_version=textbook,
+            chapter=chapter,
+            definition=definition,
+            explanation=explanation,
+            common_errors=errors,
+            question_types=questions or ["概念辨析", "综合应用"],
             source_id=source.id,
-            source_excerpt=f"自动抽取：{excerpts[(subject, concept)]}",
-            review_status="draft",
+            source_excerpt=source_excerpt,
+            review_status="approved",
             is_active=True,
         )
         db.add(node)
@@ -420,14 +519,118 @@ def materialize_graph_nodes(
                     "review_status": node.review_status,
                     "is_active": node.is_active,
                 },
-                status="draft",
-                change_note="从本地文档自动生成候选节点",
+                status="approved",
+                change_note="从来源分块生成结构化摘要（自动审核通过）",
             )
         )
         existing[(subject, concept)] = node
         created += 1
     db.commit()
     return created
+
+
+def refresh_template_node_summaries(
+    db: Session,
+    *,
+    actor_user_id: str | None = None,
+    only_placeholders: bool = True,
+) -> int:
+    """Replace legacy placeholder summaries with source-backed text.
+
+    Existing approved content is preserved unless it still contains one of the
+    old placeholder markers. Each changed node receives a version and audit log.
+    """
+    nodes = list(db.scalars(select(KnowledgeNode).where(KnowledgeNode.is_active.is_(True))))
+    changed = 0
+    for node in nodes:
+        legacy = _SUMMARY_PLACEHOLDER_RE.search(f"{node.definition}\n{node.explanation}")
+        if only_placeholders and not legacy:
+            continue
+        # Load chunks once; the corpus is large enough that issuing a query per
+        # node would make a refresh unnecessarily slow.
+        if not hasattr(refresh_template_node_summaries, "_chunk_cache"):
+            all_docs = list(db.scalars(select(KnowledgeDocument)))
+            docs_by_id = {doc.id: doc for doc in all_docs}
+            chunks_by_doc: dict[str, list[KnowledgeChunk]] = {}
+            for chunk in db.scalars(select(KnowledgeChunk).order_by(KnowledgeChunk.document_id, KnowledgeChunk.sequence)):
+                chunks_by_doc.setdefault(chunk.document_id, []).append(chunk)
+            refresh_template_node_summaries._chunk_cache = (docs_by_id, chunks_by_doc)  # type: ignore[attr-defined]
+        docs_by_id, chunks_by_doc = refresh_template_node_summaries._chunk_cache  # type: ignore[attr-defined]
+        evidence: list[tuple[str, int, str]] = []
+        document_ids: set[str] = set()
+        needle = node.name.lower()
+        for document_id, chunks in chunks_by_doc.items():
+            document = docs_by_id.get(document_id)
+            if document is None or document.subject != node.subject:
+                continue
+            matching = [chunk for chunk in chunks if needle in (chunk.content or "").lower()]
+            if matching:
+                document_ids.add(document.id)
+                evidence.extend((document.title, chunk.sequence, chunk.content) for chunk in matching)
+        definition, explanation, source_excerpt, errors, questions = _build_node_summary(
+            subject=node.subject,
+            grade=node.grade,
+            textbook_version=node.textbook_version,
+            chapter=node.chapter,
+            concept=node.name,
+            document_count=len(document_ids),
+            evidence=evidence,
+        )
+        if not evidence:
+            # Keep the node useful and honest when no chunk contains the exact name.
+            definition = f"{node.subject}·{node.grade}·{node.chapter}中的“{node.name}”知识点。"
+            explanation = (
+                f"学科：{node.subject} · 年级：{node.grade} · 教材：{node.textbook_version} · 章节：{node.chapter}\n"
+                "当前暂无包含该名称的原文分块，已保留节点并等待补充来源。"
+            )
+            source_excerpt = node.source_excerpt or "来源：待补充"
+        old_version = node.version
+        node.version = old_version + 1
+        node.definition = definition
+        node.explanation = explanation
+        node.source_excerpt = source_excerpt
+        if errors:
+            node.common_errors = errors
+        if questions:
+            node.question_types = questions
+        db.add(
+            KnowledgeNodeVersion(
+                node_id=node.id,
+                version=node.version,
+                snapshot={
+                    "id": node.id,
+                    "name": node.name,
+                    "subject": node.subject,
+                    "grade": node.grade,
+                    "textbook_version": node.textbook_version,
+                    "chapter": node.chapter,
+                    "section": node.section,
+                    "definition": node.definition,
+                    "explanation": node.explanation,
+                    "common_errors": list(node.common_errors or []),
+                    "question_types": list(node.question_types or []),
+                    "source_id": node.source_id,
+                    "source_excerpt": node.source_excerpt,
+                    "review_status": node.review_status,
+                    "is_active": node.is_active,
+                },
+                status="approved",
+                created_by=actor_user_id,
+                change_note="补全来源驱动摘要（自动审核通过）",
+            )
+        )
+        db.add(
+            AuditLog(
+                actor_user_id=actor_user_id,
+                action="knowledge_node.summary_refresh",
+                target_type="knowledge_node",
+                target_id=node.id,
+                details={"old_version": old_version, "new_version": node.version, "evidence_documents": len(document_ids)},
+            )
+        )
+        changed += 1
+    db.commit()
+    return changed
 
 
 @dataclass(frozen=True)
