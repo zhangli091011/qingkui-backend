@@ -391,7 +391,9 @@ def _build_node_summary(
         definition = scored[0] if scored else f"{subject}·{grade}·{chapter}中的“{concept}”相关知识，摘要依据已导入教材片段整理。"
     definition = definition[:4000]
     body = scored[:4] or [definition]
-    meta = f"学科：{subject} · 年级：{grade} · 教材：{textbook_version} · 章节：{chapter} · 来源：{document_count} 份文档"
+    # Metadata is intentionally kept separate from the knowledge summary. The
+    # learner-facing graph should explain the concept, not expose corpus counts.
+    meta = f"学科：{subject} · 年级：{grade} · 教材：{textbook_version} · 章节：{chapter}"
     explanation = meta + "\n" + "\n".join(f"• {sentence}" for sentence in body)
     source_lines: list[str] = []
     for title, sequence, _ in evidence[:6]:

@@ -1,5 +1,7 @@
 from datetime import date, datetime
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.models import EdgeType, HelpLevel, KnowledgeStatus, QaMode, UserRole
@@ -791,6 +793,17 @@ class AdminUserRoleUpdate(BaseModel):
     role: UserRole
 
 
+class AdminSessionResponse(BaseModel):
+    id: str
+    user_id: str
+    username: str
+    device_name: str | None
+    expires_at: datetime
+    revoked_at: datetime | None
+    created_at: datetime
+    active: bool
+
+
 class PilotMetricsResponse(BaseModel):
     start_at: datetime
     end_at: datetime
@@ -1220,3 +1233,26 @@ class HealthResponse(BaseModel):
     object_storage_ready: bool
     release_config_ready: bool
     release_config_issues: list[str]
+
+
+class CorpusGenerateRequest(BaseModel):
+    subject: Literal["语文", "英语"] = "语文"
+    category: str = Field(default="综合", min_length=1, max_length=40)
+    topic: str | None = Field(default=None, max_length=120)
+    grade: str = Field(default="高中", max_length=30)
+    count: int = Field(default=3, ge=1, le=10)
+
+
+class CorpusItem(BaseModel):
+    title: str
+    content: str
+    keywords: list[str]
+    subject: str
+    category: str
+    grade: str
+    source_date: date
+    source_url: str
+
+
+class CorpusGenerateResponse(BaseModel):
+    items: list[CorpusItem]

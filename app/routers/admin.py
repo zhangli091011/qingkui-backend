@@ -38,6 +38,7 @@ from app.schemas import (
     AdminUserResponse,
     AdminUserRoleUpdate,
     AdminUserStatusUpdate,
+    AdminSessionResponse,
     FeedbackReview,
     KnowledgeEdgeCreate,
     KnowledgeEdgeResponse,
@@ -1109,6 +1110,67 @@ def list_users(
         }
         for user, balance in db.execute(statement)
     ]
+
+
+@router.get("/sessions", response_model=list[AdminSessionResponse])
+def list_sessions(
+    db: DbSession,
+    _admin: SuperAdminUser,
+    q: str | None = None,
+    active_only: bool = True,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=300),
+) -> list[dict]:
+    """List user sessions for the native admin workspace.
+
+    Only session metadata is returned; refresh tokens are never exposed.
+    """
+    statement = (
+        select(RefreshSession, User.username)
+        .join(User, User.id == RefreshSession.user_id)
+        .order_by(RefreshSession.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    if active_only:
+        statement = statement.where(RefreshSession.revoked_at.is_(None), RefreshSession.expires_at > datetime.now(timezone.utc))
+    if q:
+        statement = statement.where(User.username.ilike(f"%{q.strip()}%"))
+    now = datetime.now(timezone.utc)
+    return [
+        {
+            "id": session.id,
+            "user_id": session.user_id,
+            "username": username,
+            "device_name": session.device_name,
+            "expires_at": session.expires_at,
+            "revoked_at": session.revoked_at,
+            "created_at": session.created_at,
+            "active": session.revoked_at is None and session.expires_at > now,
+        }
+        for session, username in db.execute(statement)
+    ]
+
+
+@router.delete("/sessions/{session_id}", response_model=AdminSessionResponse)
+def revoke_session(session_id: str, db: DbSession, admin: SuperAdminUser) -> dict:
+    session = db.get(RefreshSession, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    session.revoked_at = datetime.now(timezone.utc)
+    username = db.scalar(select(User.username).where(User.id == session.user_id)) or ""
+    db.add(AuditLog(actor_user_id=admin.id, action="admin.session_revoked", target_type="refresh_session", target_id=session.id, details={"user_id": session.user_id}))
+    db.commit()
+    return {
+        "id": session.id,
+        "user_id": session.user_id,
+        "username": username,
+        "device_name": session.device_name,
+        "expires_at": session.expires_at,
+        "revoked_at": session.revoked_at,
+        "created_at": session.created_at,
+        "active": False,
+    }
 
 
 def _ensure_admin_change_is_safe(db: DbSession, actor: User, target: User, *, removing_admin: bool) -> None:
