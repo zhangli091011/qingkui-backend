@@ -197,6 +197,26 @@ def neighbors(
         .order_by(KnowledgeEdge.id)
         .limit(limit)
     ).all()
+    # The imported graph can contain several edge types for the same pair and
+    # many cross-chapter semantic links. For drill-down, prefer real children
+    # from the same chapter/section and emit each target node once; otherwise
+    # the canvas becomes a web of duplicate lines instead of a branch tree.
+    if direction == "outgoing" and rows:
+        scoped = [
+            row for row in rows
+            if row[1].subject == center.subject
+            and row[1].grade == center.grade
+            and (row[1].chapter == center.chapter or row[1].section == center.section)
+        ]
+        if scoped:
+            rows = scoped
+    edge_priority = {"extension": 0, "question_type": 1, "related": 2, "prerequisite": 3, "confused_with": 4}
+    unique_rows: dict[str, tuple[KnowledgeEdge, KnowledgeNode]] = {}
+    for edge, node in rows:
+        previous = unique_rows.get(node.id)
+        if previous is None or edge_priority.get(edge.edge_type.value, 99) < edge_priority.get(previous[0].edge_type.value, 99):
+            unique_rows[node.id] = (edge, node)
+    rows = list(unique_rows.values())[:limit]
     nodes = [node for _, node in rows]
     states = _states(db, user.id, [center.id, *[node.id for node in nodes]])
     items: list[NeighborNode] = []
