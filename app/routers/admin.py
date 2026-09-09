@@ -11,6 +11,7 @@ from app.models import (
     AuditLog,
     CreditAccount,
     CreditLedger,
+    Conversation,
     FeedbackSubmission,
     KnowledgeChunk,
     KnowledgeDocument,
@@ -19,6 +20,7 @@ from app.models import (
     KnowledgeNodeVersion,
     KnowledgeSource,
     ModelCall,
+    Message,
     MistakeAsset,
     MistakeProblem,
     OcrTask,
@@ -38,6 +40,9 @@ from app.schemas import (
     AdminUserResponse,
     AdminUserRoleUpdate,
     AdminUserStatusUpdate,
+    AdminUserUpdate,
+    AdminConversationUserSummary,
+    AdminConversationResponse,
     AdminSessionResponse,
     FeedbackReview,
     KnowledgeEdgeCreate,
@@ -1110,6 +1115,93 @@ def list_users(
         }
         for user, balance in db.execute(statement)
     ]
+
+
+@router.patch("/users/{user_id}", response_model=AdminUserResponse)
+def update_user(
+    user_id: str,
+    payload: AdminUserUpdate,
+    db: DbSession,
+    admin: SuperAdminUser,
+) -> dict:
+    target = db.get(User, user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    if target.deleted_at is not None:
+        raise HTTPException(status_code=409, detail="已注销账户不能修改")
+    changes = payload.model_dump(exclude_unset=True)
+    if not changes:
+        raise HTTPException(status_code=422, detail="至少提供一个要修改的字段")
+    if "email" in changes and changes["email"] is not None:
+        changes["email"] = changes["email"].strip().lower() or None
+    if "tenant_id" in changes and changes["tenant_id"] is not None:
+        changes["tenant_id"] = changes["tenant_id"].strip() or None
+    before = {field: getattr(target, field) for field in changes}
+    for field, value in changes.items():
+        setattr(target, field, value)
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="用户名或邮箱已被使用") from exc
+    db.add(AuditLog(actor_user_id=admin.id, action="user.profile_changed", target_type="user", target_id=target.id, details={"before": before, "after": changes, "fields": sorted(changes)}))
+    db.commit()
+    balance = db.scalar(select(CreditAccount.balance).where(CreditAccount.user_id == target.id))
+    return {"id": target.id, "username": target.username, "email": target.email, "nickname": target.nickname, "role": target.role, "tenant_id": target.tenant_id, "is_active": target.is_active, "balance": balance, "created_at": target.created_at, "deleted_at": target.deleted_at}
+
+
+@router.get("/conversations/users", response_model=list[AdminConversationUserSummary])
+def conversation_users(
+    db: DbSession,
+    _admin: SuperAdminUser,
+    q: str | None = None,
+    limit: int = Query(default=100, ge=1, le=300),
+) -> list[dict]:
+    statement = (
+        select(
+            User,
+            func.count(func.distinct(Conversation.id)).label("conversation_count"),
+            func.count(Message.id).label("message_count"),
+            func.max(Conversation.updated_at).label("latest_activity_at"),
+        )
+        .join(Conversation, Conversation.user_id == User.id)
+        .outerjoin(Message, Message.conversation_id == Conversation.id)
+        .where(User.deleted_at.is_(None))
+        .group_by(User.id)
+        .order_by(func.max(Conversation.updated_at).desc())
+        .limit(limit)
+    )
+    if q:
+        needle = f"%{q.strip()}%"
+        statement = statement.where(or_(User.username.ilike(needle), User.nickname.ilike(needle)))
+    return [{"user_id": user.id, "username": user.username, "nickname": user.nickname, "conversation_count": conversations, "message_count": messages, "latest_activity_at": latest} for user, conversations, messages, latest in db.execute(statement)]
+
+
+@router.get("/conversations", response_model=list[AdminConversationResponse])
+def admin_conversations(
+    db: DbSession,
+    _admin: SuperAdminUser,
+    user_id: str,
+    q: str | None = None,
+    limit: int = Query(default=100, ge=1, le=300),
+) -> list[dict]:
+    statement = select(Conversation, User.username).join(User, User.id == Conversation.user_id).options(selectinload(Conversation.messages)).where(Conversation.user_id == user_id)
+    if q:
+        needle = f"%{q.strip()}%"
+        statement = statement.where(or_(Conversation.title.ilike(needle), Conversation.messages.any(Message.content.ilike(needle))))
+    rows = db.execute(statement.order_by(Conversation.updated_at.desc()).limit(limit)).all()
+    return [{"id": conversation.id, "user_id": conversation.user_id, "username": username, "title": conversation.title, "mode": conversation.mode, "knowledge_node_id": conversation.knowledge_node_id, "subject": conversation.subject, "created_at": conversation.created_at, "updated_at": conversation.updated_at, "messages": conversation.messages} for conversation, username in rows]
+
+
+@router.delete("/conversations/{conversation_id}", status_code=204)
+def delete_admin_conversation(conversation_id: str, db: DbSession, admin: SuperAdminUser) -> None:
+    conversation = db.get(Conversation, conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="对话不存在")
+    user_id = conversation.user_id
+    db.delete(conversation)
+    db.add(AuditLog(actor_user_id=admin.id, action="admin.conversation_deleted", target_type="conversation", target_id=conversation_id, details={"user_id": user_id}))
+    db.commit()
 
 
 @router.get("/sessions", response_model=list[AdminSessionResponse])

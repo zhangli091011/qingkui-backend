@@ -793,6 +793,27 @@ class AdminUserRoleUpdate(BaseModel):
     role: UserRole
 
 
+class AdminUserUpdate(BaseModel):
+    username: str | None = Field(default=None, min_length=3, max_length=32, pattern=r"^[A-Za-z0-9_]+$")
+    email: str | None = Field(default=None, max_length=255)
+    nickname: str | None = Field(default=None, min_length=1, max_length=40)
+    tenant_id: str | None = Field(default=None, max_length=36)
+
+
+class AdminConversationUserSummary(BaseModel):
+    user_id: str
+    username: str
+    nickname: str
+    conversation_count: int
+    message_count: int
+    latest_activity_at: datetime | None
+
+
+class AdminConversationResponse(ConversationResponse):
+    user_id: str
+    username: str
+
+
 class AdminSessionResponse(BaseModel):
     id: str
     user_id: str
