@@ -17,6 +17,7 @@ from app.schemas import (
     SubjectClassificationResponse,
 )
 from app.services.knowledge import search_nodes, status_for
+from app.services.textbook import volume_label
 from app.subjects import SUBJECTS, classify_subject_semantic, infer_subject
 
 
@@ -81,18 +82,37 @@ def subjects(user: CurrentUser) -> list[str]:
 
 @router.get("/catalog", response_model=list[KnowledgeCatalogItem])
 def catalog(db: DbSession, user: CurrentUser) -> list[KnowledgeCatalogItem]:
+    """Return the navigation catalog: subject -> textbook volume -> node count.
+
+    Volumes (必修一 / 必修二 ...) are derived from chapter numbers, so the graph can
+    branch on real textbook structure instead of a generic 中学 label.
+    """
     rows = db.execute(
         select(
             KnowledgeNode.subject,
             KnowledgeNode.grade,
             KnowledgeNode.textbook_version,
+            KnowledgeNode.chapter,
             func.count(KnowledgeNode.id),
         )
         .where(KnowledgeNode.is_active.is_(True), KnowledgeNode.review_status == "approved")
-        .group_by(KnowledgeNode.subject, KnowledgeNode.grade, KnowledgeNode.textbook_version)
-        .order_by(KnowledgeNode.subject, KnowledgeNode.grade, KnowledgeNode.textbook_version)
+        .group_by(
+            KnowledgeNode.subject,
+            KnowledgeNode.grade,
+            KnowledgeNode.textbook_version,
+            KnowledgeNode.chapter,
+        )
+        .order_by(KnowledgeNode.subject, KnowledgeNode.grade, KnowledgeNode.textbook_version, KnowledgeNode.chapter)
     ).all()
-    return [KnowledgeCatalogItem(subject=s, grade=g, textbook_version=v, node_count=count) for s, g, v, count in rows]
+    buckets: dict[tuple[str, str, str, str], int] = {}
+    for subject, grade, textbook_version, chapter, count in rows:
+        volume = volume_label(subject, textbook_version, chapter)
+        key = (subject, grade, textbook_version, volume)
+        buckets[key] = buckets.get(key, 0) + count
+    return [
+        KnowledgeCatalogItem(subject=s, grade=g, textbook_version=v, volume=vol, node_count=count)
+        for (s, g, v, vol), count in sorted(buckets.items())
+    ]
 
 
 @router.get("/tree", response_model=KnowledgeTreeResponse)
@@ -102,6 +122,7 @@ def knowledge_tree(
     subject: str = Query(min_length=1, max_length=40),
     grade: str = Query(min_length=1, max_length=40),
     textbook_version: str = Query(min_length=1, max_length=80),
+    volume: str | None = Query(default=None, max_length=80),
 ) -> KnowledgeTreeResponse:
     nodes = list(
         db.scalars(
@@ -116,6 +137,8 @@ def knowledge_tree(
             .order_by(KnowledgeNode.chapter, KnowledgeNode.section, KnowledgeNode.name)
         )
     )
+    if volume:
+        nodes = [node for node in nodes if volume_label(node.subject, node.textbook_version, node.chapter) == volume]
     statuses = _statuses(db, user.id, [node.id for node in nodes])
     grouped: dict[str, dict[str, list[KnowledgeTreeNode]]] = {}
     for node in nodes:

@@ -294,6 +294,7 @@ class KnowledgeCatalogItem(BaseModel):
     subject: str
     grade: str
     textbook_version: str
+    volume: str | None = None
     node_count: int
 
 
